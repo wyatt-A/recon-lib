@@ -1,0 +1,9 @@
+[package]
+name = "recon-lib"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+array-lib = {git = "ssh://git@github.com/wyatt-A/array-lib.git", features = ["io-cfl","io-nifti"]}
+dft-lib = {git = "ssh://git@github.com/wyatt-A/dft-lib.git"}
+serde = { version = "1.0.228", features = ["derive"] }
