@@ -14,5 +14,11 @@ struct Args {
 fn main() {
     let args = Args::parse();
     let settings = CSCartesianSettings::from_file(args.reco_settings);
-    run_cs_cartesian(&settings,args.work_dir, args.raw_cfl, args.traj_cfl, args.output)
+    run_cs_cartesian(
+        &settings,
+        &args.work_dir,
+        args.work_dir.join(&args.raw_cfl),
+        args.work_dir.join(&args.traj_cfl),
+        args.work_dir.join(&args.output)
+    )
 }
