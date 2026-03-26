@@ -4,10 +4,11 @@ pub mod bart_pics;
 use array_lib::ArrayDim;
 use array_lib::cfl::ndarray::parallel::prelude::*;
 use array_lib::num_complex::Complex32;
+use serde::{Deserialize, Serialize};
 use crate::bart_pics::BartPicsSettings;
 use crate::filters::Filter;
 
-
+#[derive(Debug,Serialize,Deserialize,Clone)]
 pub enum ReconMethod {
     CSCartesian{settings:CSCartesianSettings},
     FFT,
@@ -19,7 +20,7 @@ impl Default for ReconMethod {
     }
 }
 
-
+#[derive(Debug,Serialize,Deserialize,Clone)]
 struct CSCartesianSettings {
     bart_settings: BartPicsSettings,
     filter_coefficients: Option<[f32;2]>,
