@@ -1,12 +1,15 @@
 pub mod filters;
 pub mod bart_pics;
 
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::Path;
 use array_lib::ArrayDim;
 use array_lib::cfl::ndarray::parallel::prelude::*;
 use array_lib::io_cfl::{read_cfl, write_cfl};
 use array_lib::num_complex::Complex32;
 use serde::{Deserialize, Serialize};
+use serde::__private228::de::missing_field;
 use crate::bart_pics::{bart_pics, BartPicsSettings};
 use crate::filters::{Fermi, Filter};
 
@@ -16,13 +19,10 @@ pub enum ReconMethod {
     FFT,
 }
 
-pub fn run_cs_cartesian(settings:&CSCartesianSettings,work_dir:impl AsRef<Path>, raw_cfl:impl AsRef<Path>, traj_file:impl AsRef<Path>, outfile: impl AsRef<Path>){
-
+pub fn run_cs_cartesian(settings:&CSCartesianSettings, work_dir:impl AsRef<Path>, raw_cfl:impl AsRef<Path>, traj_file:impl AsRef<Path>, outfile: impl AsRef<Path>) {
     let (raw,raw_dims) = read_cfl(&raw_cfl);
     let (traj,traj_dims) = read_cfl(&traj_file);
-
     let grid_dims = ArrayDim::from_shape(&settings.grid_dims);
-
     let g = {
         let filter = settings.filter_coefficients.as_ref().map(|&[a,b]|Fermi::new(a,b));
         let g = grid_cartesian(&raw,raw_dims,&traj,traj_dims,grid_dims, true, filter);
@@ -30,12 +30,9 @@ pub fn run_cs_cartesian(settings:&CSCartesianSettings,work_dir:impl AsRef<Path>,
         grid_dims.fftshift(&g,&mut shifted,true);
         shifted
     };
-
     let s = BartPicsSettings::default();
     let (img,..) = bart_pics(&g,grid_dims,&s,&work_dir);
-
     write_cfl(outfile,&img,grid_dims);
-
 }
 
 
@@ -61,6 +58,22 @@ impl Default for CSCartesianSettings {
             filter_coefficients: None,
         }
     }
+}
+
+impl CSCartesianSettings {
+    pub fn to_file(&self,filename:impl AsRef<Path>) {
+        let s = serde_json::to_string_pretty(&self).unwrap();
+        let mut f = File::create(filename.as_ref().with_extension("json")).unwrap();
+        f.write_all(s.as_bytes()).unwrap();
+    }
+
+    pub fn from_file(filename:impl AsRef<Path>) -> Self {
+        let mut f = File::open(filename.as_ref().with_extension("json")).unwrap();
+        let mut s = String::new();
+        f.read_to_string(&mut s).unwrap();
+        serde_json::from_str(&s).unwrap()
+    }
+
 }
 
 /// constructs gridded k-space data from compressed views and a trajector mapping for each readout
