@@ -4,7 +4,35 @@ pub mod bart_pics;
 use array_lib::ArrayDim;
 use array_lib::cfl::ndarray::parallel::prelude::*;
 use array_lib::num_complex::Complex32;
+use crate::bart_pics::BartPicsSettings;
 use crate::filters::Filter;
+
+
+pub enum ReconMethod {
+    CSCartesian{settings:CSCartesianSettings},
+    FFT,
+}
+
+impl Default for ReconMethod {
+    fn default() -> Self {
+        Self::CSCartesian {settings: CSCartesianSettings::default()}
+    }
+}
+
+
+struct CSCartesianSettings {
+    bart_settings: BartPicsSettings,
+    filter_coefficients: Option<[f32;2]>,
+}
+
+impl Default for CSCartesianSettings {
+    fn default() -> Self {
+        Self {
+            bart_settings: BartPicsSettings::default(),
+            filter_coefficients: None,
+        }
+    }
+}
 
 /// constructs gridded k-space data from compressed views and a trajector mapping for each readout
 /// if traj has only 1 entry for dim[0], it is assumed to be 2-D. If it has 2, it is assumed to be 3-D
