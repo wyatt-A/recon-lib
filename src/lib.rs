@@ -47,7 +47,7 @@ impl Default for ReconMethod {
 }
 
 #[derive(Debug,Serialize,Deserialize,Clone)]
-struct CSCartesianSettings {
+pub struct CSCartesianSettings {
     bart_settings: BartPicsSettings,
     grid_dims: [usize;3],
     filter_coefficients: Option<[f32;2]>,
