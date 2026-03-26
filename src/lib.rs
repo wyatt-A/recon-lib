@@ -1,18 +1,44 @@
 pub mod filters;
 pub mod bart_pics;
 
+use std::path::Path;
 use array_lib::ArrayDim;
 use array_lib::cfl::ndarray::parallel::prelude::*;
+use array_lib::io_cfl::{read_cfl, write_cfl};
 use array_lib::num_complex::Complex32;
 use serde::{Deserialize, Serialize};
-use crate::bart_pics::BartPicsSettings;
-use crate::filters::Filter;
+use crate::bart_pics::{bart_pics, BartPicsSettings};
+use crate::filters::{Fermi, Filter};
 
 #[derive(Debug,Serialize,Deserialize,Clone)]
 pub enum ReconMethod {
     CSCartesian{settings:CSCartesianSettings},
     FFT,
 }
+
+pub fn run_cs_cartesian(settings:&CSCartesianSettings,work_dir:impl AsRef<Path>, raw_cfl:impl AsRef<Path>, traj_file:impl AsRef<Path>, outfile: impl AsRef<Path>){
+
+    let (raw,raw_dims) = read_cfl(&raw_cfl);
+    let (traj,traj_dims) = read_cfl(&traj_file);
+
+    let grid_dims = ArrayDim::from_shape(&settings.grid_dims);
+
+    let g = {
+        let filter = settings.filter_coefficients.as_ref().map(|&[a,b]|Fermi::new(a,b));
+        let g = grid_cartesian(&raw,raw_dims,&traj,traj_dims,grid_dims, true, filter);
+        let mut shifted = grid_dims.alloc(Complex32::ZERO);
+        grid_dims.fftshift(&g,&mut shifted,true);
+        shifted
+    };
+
+    let s = BartPicsSettings::default();
+    let (img,..) = bart_pics(&g,grid_dims,&s,&work_dir);
+
+    write_cfl(outfile,&img,grid_dims);
+
+}
+
+
 
 impl Default for ReconMethod {
     fn default() -> Self {
@@ -23,12 +49,14 @@ impl Default for ReconMethod {
 #[derive(Debug,Serialize,Deserialize,Clone)]
 struct CSCartesianSettings {
     bart_settings: BartPicsSettings,
+    grid_dims: [usize;3],
     filter_coefficients: Option<[f32;2]>,
 }
 
 impl Default for CSCartesianSettings {
     fn default() -> Self {
         Self {
+            grid_dims: [512,256,256],
             bart_settings: BartPicsSettings::default(),
             filter_coefficients: None,
         }
