@@ -74,6 +74,11 @@ impl CSCartesianSettings {
         serde_json::from_str(&s).unwrap()
     }
 
+    pub fn to_toml_table(&self) -> toml::Table {
+        let value = toml::Value::try_from(self).unwrap();
+        value.as_table().unwrap().to_owned()
+    }
+
 }
 
 /// constructs gridded k-space data from compressed views and a trajector mapping for each readout
