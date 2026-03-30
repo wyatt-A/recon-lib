@@ -30,8 +30,8 @@ pub fn run_cs_cartesian(settings:&CSCartesianSettings, work_dir:impl AsRef<Path>
         grid_dims.fftshift(&g,&mut shifted,true);
         shifted
     };
-    let s = BartPicsSettings::default();
-    let (img,..) = bart_pics(&g,grid_dims,&s,&work_dir);
+    let s = &settings.bart_settings;
+    let (img,..) = bart_pics(&g,grid_dims,s,&work_dir);
     write_cfl(outfile,&img,grid_dims);
 }
 
