@@ -17,7 +17,7 @@ fn main() {
     let f = Fermi::new(0.48,0.03);
 
     let g = {
-        let g = grid_cartesian::<Fermi>(&raw,raw_dims,&traj,traj_dims,grid_dims, true, Some(f));
+        let (g,_) = grid_cartesian::<Fermi>(&raw,raw_dims,&traj,traj_dims,grid_dims, true, Some(f));
         let mut shifted = grid_dims.alloc(Complex32::ZERO);
         grid_dims.fftshift(&g,&mut shifted,true);
         shifted

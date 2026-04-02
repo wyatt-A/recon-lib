@@ -25,7 +25,7 @@ pub fn run_cs_cartesian(settings:&CSCartesianSettings, work_dir:impl AsRef<Path>
     let grid_dims = ArrayDim::from_shape(&settings.grid_dims);
     let g = {
         let filter = settings.filter_coefficients.as_ref().map(|&[a,b]|Fermi::new(a,b));
-        let g = grid_cartesian(&raw,raw_dims,&traj,traj_dims,grid_dims, true, filter);
+        let (g,_) = grid_cartesian(&raw,raw_dims,&traj,traj_dims,grid_dims, true, filter);
         let mut shifted = grid_dims.alloc(Complex32::ZERO);
         grid_dims.fftshift(&g,&mut shifted,true);
         shifted
@@ -83,7 +83,7 @@ impl CSCartesianSettings {
 
 /// constructs gridded k-space data from compressed views and a trajector mapping for each readout
 /// if traj has only 1 entry for dim[0], it is assumed to be 2-D. If it has 2, it is assumed to be 3-D
-pub fn grid_cartesian<T:Filter>(data:&[Complex32], data_dims:ArrayDim, traj:&[Complex32], traj_dims:ArrayDim, grid_size:ArrayDim, phase_correct:bool, filter:Option<T> ) -> Vec<Complex32> {
+pub fn grid_cartesian<T:Filter>(data:&[Complex32], data_dims:ArrayDim, traj:&[Complex32], traj_dims:ArrayDim, grid_size:ArrayDim, phase_correct:bool, filter:Option<T> ) -> (Vec<Complex32>,Vec<f32>) {
 
     // if a filter is passed, phase correction is set to true
     let phase_correct = if filter.is_some() {
@@ -103,9 +103,17 @@ pub fn grid_cartesian<T:Filter>(data:&[Complex32], data_dims:ArrayDim, traj:&[Co
     let mut max_energy = 0.0;
     let mut max_energy_coords = [0,0,0];
 
+    let mask_dims = ArrayDim::from_shape(&grid_dims[1..]);
+
+    let mut mask = mask_dims.alloc(0f32);
+
     data.chunks_exact(n_read).enumerate().for_each(|(i,view)| {
         let [y,z] = coords[i];
         for x in 0..grid_dims[0] {
+
+            let mask_addr = mask_dims.calc_addr_signed(&[y,z]);
+            mask[mask_addr] = 1.;
+
             let addr = grid_size.calc_addr_signed(&[x as isize, y, z]);
             let s = view.get(x).cloned().unwrap_or(Complex32::ZERO);
             if phase_correct {
@@ -136,7 +144,7 @@ pub fn grid_cartesian<T:Filter>(data:&[Complex32], data_dims:ArrayDim, traj:&[Co
         })
     }
 
-    vol
+    (vol,mask)
 }
 
 fn traj_to_coords(traj:&[Complex32], traj_dims:ArrayDim) -> Vec<[isize;2]> {
