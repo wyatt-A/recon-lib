@@ -787,6 +787,7 @@ dependencies = [
  "conj-grad",
  "dft-lib",
  "dwt-lib",
+ "rayon",
  "serde",
  "serde_json",
  "toml",

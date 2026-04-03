@@ -1,15 +1,23 @@
+use std::arch::x86_64::CpuidResult;
 use array_lib::ArrayDim;
 use array_lib::io_cfl::read_cfl;
 use array_lib::io_nifti::write_nifti;
 use array_lib::num_complex::Complex32;
+use conj_grad::CGSolver;
 use dft_lib::common::{FftDirection, NormalizationType};
+use dft_lib::fftw_fft::{fftw_fftn, fftw_fftn_batched};
 use dft_lib::rs_fft::{rs_fftn, rs_fftn_batched};
 use dwt_lib::swt2::SWT2Plan;
 use dwt_lib::wavelet::{Wavelet, WaveletType};
 use recon_lib::filters::Fermi;
 use recon_lib::grid_cartesian;
+use rayon::prelude::*;
 
 fn main() {
+
+    let lambda = 0.005;
+    let rho = 0.1;
+    let n_it = 200;
 
     let (raw,raw_dims) = read_cfl("raw-1.cfl");
     let (traj,traj_dims) = read_cfl("traj-1.cfl");
@@ -17,10 +25,11 @@ fn main() {
     let grid_dims = ArrayDim::from_shape(&[512,256,256]);
 
     let (mut g,mask) = {
-        let (g,mask) = grid_cartesian::<Fermi>(&raw,raw_dims,&traj,traj_dims,grid_dims, true, None);
-        let mut shifted = grid_dims.alloc(Complex32::ZERO);
-        grid_dims.fftshift(&g,&mut shifted,true);
-        (shifted,mask)
+        let (mut g,mask) = grid_cartesian::<Fermi>(&raw,raw_dims,&traj,traj_dims,grid_dims, true, None);
+        g.iter_mut().for_each(|x| *x = x.scale(1./16.));
+        // let mut shifted = grid_dims.alloc(Complex32::ZERO);
+        // grid_dims.fftshift(&g,&mut shifted,true);
+        (g,mask)
     };
 
     rs_fftn_batched(&mut g,&[512],256*256,FftDirection::Inverse,NormalizationType::Unitary);
@@ -35,12 +44,16 @@ fn main() {
         *x = g[addr];
     });
 
+    write_nifti("mask.nii",&mask,slice_dims);
+    write_nifti("y.nii",&slice_buff.iter().map(|x|x.norm()).collect::<Vec<_>>(),slice_dims);
+
     // k-space for data consistency
     let y = slice_buff.clone();
 
     rs_fftn(&mut slice_buff,&[256,256],FftDirection::Inverse,NormalizationType::Unitary);
 
     let mut x = slice_buff;
+    write_nifti("x.nii",&x.iter().map(|x|x.norm()).collect::<Vec<_>>(),slice_dims);
 
     let swt = SWT2Plan::new(256,256,6,&Wavelet::new(WaveletType::Daubechies2));
 
@@ -72,13 +85,12 @@ fn main() {
 
     // z0 = W x0
     let mut z = vec![Complex32::ZERO; swt.t_domain_size()];
-    w(&x,&mut z);
+    //w(&x,&mut z);
 
     // u0 = 0;
     let mut u = vec![Complex32::ZERO; swt.t_domain_size()];
 
-    // b = A^H y + rho W^H (z + u)
-    let rho = 1e-2f32;
+    // b = A^H y + rho W^H (z - u)
     let calc_b = |y_meas: &[Complex32], z: &[Complex32], u: &[Complex32], b: &mut [Complex32]| {
         ah(y_meas, b);
 
@@ -98,21 +110,18 @@ fn main() {
     // x-update operator: y = A^H A x + rho W^H W x
     let cga = |x: &[Complex32], y: &mut [Complex32]| {
         let mut tmp_k = vec![Complex32::ZERO; x.len()];
-        let mut tmp_w = vec![Complex32::ZERO; swt.t_domain_size()];
         let mut tmp_img = vec![Complex32::ZERO; x.len()];
-
         a(x, &mut tmp_k);
         ah(&tmp_k, y);
-
-        w(x, &mut tmp_w);
-        wh(&tmp_w, &mut tmp_img);
-
+        tmp_img.copy_from_slice(x);
         y.iter_mut().zip(&tmp_img).for_each(|(yi, &wi)| {
             *yi += rho * wi;
         });
     };
 
-    for it in 0..10 {
+
+
+    for it in 0..n_it {
 
         println!("it {}",it);
         // update x
@@ -121,10 +130,14 @@ fn main() {
         let mut xtmp = vec![Complex32::ZERO; b.len()];
         calc_b(&y, &z, &u, &mut b);
         let mut cg = conj_grad::CGSolver::new(&cga);
-        cg.report_residuals();
+        //cg.report_residuals();
         cg.solve(&mut xtmp, &b, 10, 0.001);
         x.copy_from_slice(&xtmp);
 
+        // calculate data consistency
+        a(xtmp.as_slice(), &mut b);
+        let dc = y.iter().zip(b.iter()).map(|(a,b)| (a - b).norm_sqr()).sum::<f32>();
+        println!("dc = {:.6e}", dc / b.len() as f32);
 
         // update z
         let mut wtmp = vec![Complex32::ZERO; swt.t_domain_size()];
@@ -133,10 +146,12 @@ fn main() {
             *w += u;
         });
 
-        let lambda = 0.001;
         swt.soft_thresh(&mut wtmp, lambda / rho);
         let z_prev = z.clone();
         z.copy_from_slice(&wtmp);
+
+        let l1 = wtmp.iter().map(|x|x.norm()).sum::<f32>();
+        println!("l1 = {:.6e}", l1 / b.len() as f32);
 
         // update u
         w(&x, &mut wtmp);
@@ -188,6 +203,11 @@ fn main() {
         let eps_dual = (x.len() as f32).sqrt() * eps_abs
             + eps_rel * u_img_norm;
 
+
+        if (r_norm < eps_pri) &&  (s_norm < eps_dual) {
+            break
+        }
+
         println!(
             "r = {:.6e}, eps_pri = {:.6e}, s = {:.6e}, eps_dual = {:.6e}",
             r_norm, eps_pri, s_norm, eps_dual
@@ -196,7 +216,8 @@ fn main() {
     }
 
     let out = x.iter().map(|x| x.norm_sqr()).collect::<Vec<_>>();
-    write_nifti("out",&out,slice_dims);
-
+    let mut shifted = out.clone();
+    slice_dims.fftshift(&out,&mut shifted,true);
+    write_nifti("out",&shifted,slice_dims);
 
 }

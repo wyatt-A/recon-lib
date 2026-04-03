@@ -12,3 +12,4 @@ conj-grad = {git = "ssh://git@github.com/wyatt-A/conj-grad.git"}
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 toml = "1.1.0+spec-1.1.0"
+rayon = "1.11.0"
