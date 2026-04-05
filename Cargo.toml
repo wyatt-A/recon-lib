@@ -6,8 +6,8 @@ edition = "2024"
 [dependencies]
 array-lib = {git = "ssh://git@github.com/wyatt-A/array-lib.git", features = ["io-cfl","io-nifti"]}
 clap = { version = "4.6.0", features = ["derive"] }
-dft-lib = {git = "ssh://git@github.com/wyatt-A/dft-lib.git"}
-dwt-lib = {git = "ssh://git@github.com/wyatt-A/dwt-lib.git"}
+dft-lib = {git = "ssh://git@github.com/wyatt-A/dft-lib.git",features = ["cuda"]}
+dwt-lib = {git = "ssh://git@github.com/wyatt-A/dwt-lib.git",features = ["cuda"]}
 conj-grad = {git = "ssh://git@github.com/wyatt-A/conj-grad.git"}
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

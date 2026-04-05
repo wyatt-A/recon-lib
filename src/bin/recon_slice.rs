@@ -19,8 +19,8 @@ fn main() {
     let rho = 0.1;
     let n_it = 200;
 
-    let (raw,raw_dims) = read_cfl("raw-1.cfl");
-    let (traj,traj_dims) = read_cfl("traj-1.cfl");
+    let (raw,raw_dims) = read_cfl("/home/wyatt/dwt-lib/raw-1.cfl");
+    let (traj,traj_dims) = read_cfl("/home/wyatt/dwt-lib/traj-1.cfl");
 
     let grid_dims = ArrayDim::from_shape(&[512,256,256]);
 
