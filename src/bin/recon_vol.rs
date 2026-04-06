@@ -19,23 +19,23 @@ use dft_lib::fftw_fft::{fftw_fftn as fftn, fftw_fftn_batched as fftn_batched};
 fn main() {
 
     let lambda = 0.0002;
-    let rho = 0.4;
-    let n_it = 200;
+    let rho = 0.01;
+    let n_it = 300;
 
     {
-        let (raw,raw_dims) = read_cfl("/privateShares/wa41/26.wang.06/N61612/out-0.cfl");
+        let (raw,raw_dims) = read_cfl(r"B:\ProjectSpace\wa41\l_plus_s\l_plus_s_data\out-0.cfl");
         write_nifti("ref",&raw.iter().map(|x|x.norm()).collect::<Vec<_>>(),raw_dims);
     }
 
-    let (raw,raw_dims) = read_cfl("/privateShares/wa41/26.wang.06/N61612/raw-0.cfl");
-    let (traj,traj_dims) = read_cfl("/privateShares/wa41/26.wang.06/N61612/traj-0.cfl");
+    let (raw,raw_dims) = read_cfl(r"B:\ProjectSpace\wa41\l_plus_s\l_plus_s_data\raw-0.cfl");
+    let (traj,traj_dims) = read_cfl(r"B:\ProjectSpace\wa41\l_plus_s\l_plus_s_data\traj-0.cfl");
 
     let grid_dims = ArrayDim::from_shape(&[512,256,256]);
     let grid_shape = grid_dims.shape_ns();
 
     let (mut g,mask) = {
         let (mut g,mask) = grid_cartesian::<Fermi>(&raw,raw_dims,&traj,traj_dims,grid_dims, true, None);
-        g.iter_mut().for_each(|x| *x = x.scale(1./16.));
+        g.iter_mut().for_each(|x| *x = x.scale(1./28.));
         // let mut shifted = grid_dims.alloc(Complex32::ZERO);
         // grid_dims.fftshift(&g,&mut shifted,true);
         (g,mask)
@@ -84,7 +84,7 @@ fn main() {
     // // inverse model A^H
     let ah = |x: &[Complex32], y: &mut [Complex32]| {
         y.copy_from_slice(x);
-        y.chunks_exact_mut(permute_shape[0]*permute_shape[1]).zip(&mask).for_each(|(y,m)|{
+        y.chunks_exact_mut(permute_shape[0]*permute_shape[1]).for_each(|y|{
             y.iter_mut().zip(&mask).for_each(|(y,m)|{
                 *y *= m;
             })
@@ -146,6 +146,7 @@ fn main() {
 
         calc_b(&y, &z, &u, &mut b);
         let mut cg = conj_grad::CGSolver::new(&cga);
+        cg.report_residuals();
         //cg.report_residuals();
         cg.solve(&mut xtmp, &b, 200, 1e-6);
         x.copy_from_slice(&xtmp);
@@ -189,8 +190,8 @@ fn main() {
         let wx_norm = wx.iter().map(|v| v.norm_sqr()).sum::<f32>().sqrt();
         let z_norm  = z.iter().map(|v| v.norm_sqr()).sum::<f32>().sqrt();
 
-        let eps_abs = 1e-4f32;
-        let eps_rel = 1e-3f32;
+        let eps_abs = 1e-5f32;
+        let eps_rel = 1e-5f32;
 
         let eps_pri = (z.len() as f32).sqrt() * eps_abs
             + eps_rel * wx_norm.max(z_norm);
@@ -228,12 +229,16 @@ fn main() {
             r_norm, eps_pri, s_norm, eps_dual
         );
 
+        let out = x.iter().map(|x| x.norm()).collect::<Vec<_>>();
+        let mut shifted = out.clone();
+        permute_dims.fftshift(&out,&mut shifted,true);
+        write_nifti("out",&shifted,permute_dims);
+
     }
 
     let out = x.iter().map(|x| x.norm()).collect::<Vec<_>>();
     let mut shifted = out.clone();
     permute_dims.fftshift(&out,&mut shifted,true);
-
     write_nifti("out",&shifted,permute_dims);
 
 
