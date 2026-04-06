@@ -23,12 +23,12 @@ fn main() {
     let n_it = 200;
 
     {
-        let (raw,raw_dims) = read_cfl("/home/wyatt/dwt-lib/out-0.cfl");
+        let (raw,raw_dims) = read_cfl("/privateShares/wa41/26.wang.06/N61612/out-0.cfl");
         write_nifti("ref",&raw.iter().map(|x|x.norm()).collect::<Vec<_>>(),raw_dims);
     }
 
-    let (raw,raw_dims) = read_cfl("/home/wyatt/dwt-lib/raw-0.cfl");
-    let (traj,traj_dims) = read_cfl("/home/wyatt/dwt-lib/traj-0.cfl");
+    let (raw,raw_dims) = read_cfl("/privateShares/wa41/26.wang.06/N61612/raw-0.cfl");
+    let (traj,traj_dims) = read_cfl("/privateShares/wa41/26.wang.06/N61612/traj-0.cfl");
 
     let grid_dims = ArrayDim::from_shape(&[512,256,256]);
     let grid_shape = grid_dims.shape_ns();
