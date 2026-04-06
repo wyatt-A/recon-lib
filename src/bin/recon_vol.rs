@@ -3,14 +3,18 @@ use array_lib::io_cfl::read_cfl;
 use array_lib::io_nifti::write_nifti;
 use array_lib::num_complex::Complex32;
 use dft_lib::common::{FftDirection, NormalizationType};
-use dft_lib::cu_fft::{cu_fftn, cu_fftn_batch};
-use dft_lib::rs_fft::{rs_fftn, rs_fftn_batched};
-use dwt_lib::swt2::SWT2Plan;
 use dwt_lib::swt3::SWT3Plan;
 use dwt_lib::wavelet::{Wavelet, WaveletType};
 use recon_lib::filters::Fermi;
 use recon_lib::grid_cartesian;
 use rayon::prelude::*;
+
+#[cfg(feature = "cuda")]
+use dft_lib::cu_fft::{cu_fftn as fftn, cu_fftn_batch as fftn_batched};
+
+#[cfg(not(feature = "cuda"))]
+use dft_lib::fftw_fft::{fftw_fftn as fftn, fftw_fftn_batched as fftn_batched};
+
 
 fn main() {
 
@@ -38,7 +42,7 @@ fn main() {
     };
 
     // 1-D fft along x dimension
-    cu_fftn_batch(&mut g,&[grid_shape[0]],grid_shape[1]*grid_shape[2],FftDirection::Inverse,NormalizationType::Unitary);
+    fftn_batched(&mut g,&[grid_shape[0]],grid_shape[1]*grid_shape[2],FftDirection::Inverse,NormalizationType::Unitary);
 
     let permute_shape = [grid_shape[1],grid_shape[2],grid_shape[0]];
     let permute_dims = ArrayDim::from_shape(permute_shape.as_slice());
@@ -59,7 +63,7 @@ fn main() {
     // k-space for data consistency
     let y = g.clone();
 
-    cu_fftn_batch(&mut g,&permute_shape[0..2],permute_shape[2],FftDirection::Inverse,NormalizationType::Unitary);
+    fftn_batched(&mut g,&permute_shape[0..2],permute_shape[2],FftDirection::Inverse,NormalizationType::Unitary);
 
     let mut x = g;
     write_nifti("x.nii",&x.iter().map(|x|x.norm()).collect::<Vec<_>>(),permute_dims);
@@ -69,7 +73,7 @@ fn main() {
     // forward model A
     let a = |x: &[Complex32], y: &mut [Complex32] | {
         y.copy_from_slice(x);
-        cu_fftn_batch(y,&permute_shape[0..2],permute_shape[2],FftDirection::Forward,NormalizationType::Unitary);
+        fftn_batched(y,&permute_shape[0..2],permute_shape[2],FftDirection::Forward,NormalizationType::Unitary);
         y.chunks_exact_mut(permute_shape[0]*permute_shape[1]).zip(&mask).for_each(|(y,m)|{
             y.iter_mut().zip(&mask).for_each(|(y,m)|{
                 *y *= m;
@@ -85,7 +89,7 @@ fn main() {
                 *y *= m;
             })
         });
-        cu_fftn_batch(y,&permute_shape[0..2],permute_shape[2],FftDirection::Inverse,NormalizationType::Unitary);
+        fftn_batched(y,&permute_shape[0..2],permute_shape[2],FftDirection::Inverse,NormalizationType::Unitary);
     };
 
     let w = |x: &[Complex32], y:&mut [Complex32]| {
