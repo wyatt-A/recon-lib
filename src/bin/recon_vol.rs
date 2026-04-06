@@ -56,7 +56,7 @@ fn main() {
         g = permuted;
     }
 
-    let permute_shape = [grid_shape[1],grid_shape[2],100];
+    let permute_shape = [grid_shape[1],grid_shape[2],512];
     let permute_dims = ArrayDim::from_shape(permute_shape.as_slice());
     let mut g = g[0..permute_dims.numel()].to_owned();
 
