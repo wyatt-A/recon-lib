@@ -10,7 +10,7 @@ use dft_lib::rs_fft::{rs_fftn, rs_fftn_batched};
 use dwt_lib::swt2::SWT2Plan;
 use dwt_lib::wavelet::{Wavelet, WaveletType};
 use recon_lib::filters::Fermi;
-use recon_lib::grid_cartesian;
+use recon_lib::grid_cartesian_f;
 use rayon::prelude::*;
 
 fn main() {
@@ -25,7 +25,7 @@ fn main() {
     let grid_dims = ArrayDim::from_shape(&[512,256,256]);
 
     let (mut g,mask) = {
-        let (mut g,mask) = grid_cartesian::<Fermi>(&raw,raw_dims,&traj,traj_dims,grid_dims, true, None);
+        let (mut g,mask) = grid_cartesian_f::<Fermi>(&raw, raw_dims, &traj, traj_dims, grid_dims, true, None);
         g.iter_mut().for_each(|x| *x = x.scale(1./16.));
         // let mut shifted = grid_dims.alloc(Complex32::ZERO);
         // grid_dims.fftshift(&g,&mut shifted,true);

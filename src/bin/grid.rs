@@ -4,7 +4,7 @@ use array_lib::io_nifti::write_nifti;
 use array_lib::num_complex::Complex32;
 use recon_lib::bart_pics::{bart_pics, BartPicsSettings};
 use recon_lib::filters::Fermi;
-use recon_lib::grid_cartesian;
+use recon_lib::grid_cartesian_f;
 
 fn main() {
 
@@ -17,7 +17,7 @@ fn main() {
     let f = Fermi::new(0.48,0.03);
 
     let g = {
-        let (g,_) = grid_cartesian::<Fermi>(&raw,raw_dims,&traj,traj_dims,grid_dims, true, Some(f));
+        let (g,_) = grid_cartesian_f::<Fermi>(&raw, raw_dims, &traj, traj_dims, grid_dims, true, Some(f));
         let mut shifted = grid_dims.alloc(Complex32::ZERO);
         grid_dims.fftshift(&g,&mut shifted,true);
         shifted

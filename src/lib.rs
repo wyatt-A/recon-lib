@@ -8,6 +8,8 @@ use array_lib::ArrayDim;
 use array_lib::cfl::ndarray::parallel::prelude::*;
 use array_lib::io_cfl::{read_cfl, write_cfl};
 use array_lib::num_complex::Complex32;
+use dwt_lib::swt3::SWT3Plan;
+use dwt_lib::wavelet::{Wavelet, WaveletType};
 use serde::{Deserialize, Serialize};
 use serde::__private228::de::missing_field;
 use crate::bart_pics::{bart_pics, BartPicsSettings};
@@ -25,7 +27,7 @@ pub fn run_cs_cartesian(settings:&CSCartesianSettings, work_dir:impl AsRef<Path>
     let grid_dims = ArrayDim::from_shape(&settings.grid_dims);
     let g = {
         let filter = settings.filter_coefficients.as_ref().map(|&[a,b]|Fermi::new(a,b));
-        let (g,_) = grid_cartesian(&raw,raw_dims,&traj,traj_dims,grid_dims, true, filter);
+        let (g,_) = grid_cartesian_f(&raw, raw_dims, &traj, traj_dims, grid_dims, true, filter);
         let mut shifted = grid_dims.alloc(Complex32::ZERO);
         grid_dims.fftshift(&g,&mut shifted,true);
         shifted
@@ -81,9 +83,87 @@ impl CSCartesianSettings {
 
 }
 
+
+
+pub fn estimate_phase_mask(img:&[Complex32],phase:&mut [Complex32], dims:ArrayDim, rel_thresh:f32, n_levels:usize) {
+
+    let shape = dims.shape_squeeze();
+    let swt3 = SWT3Plan::new(&shape[0..3],n_levels,Wavelet::new(WaveletType::Daubechies2));
+    let mut t = vec![Complex32::ZERO; swt3.t_domain_size()];
+    swt3.decompose(img, &mut t);
+    swt3.soft_thresh(&mut t, rel_thresh);
+    swt3.reconstruct(&t,phase);
+
+    phase.iter_mut().for_each(|x|{
+        *x /= x.norm();
+    })
+
+
+}
+
+
+pub fn grid_cartesian(data:&[Complex32], data_dims:ArrayDim, traj:&[Complex32], traj_dims:ArrayDim, grid_size:ArrayDim, phase_correct:bool ) -> (Vec<Complex32>,Vec<f32>) {
+
+    let data_dims = data_dims.shape();
+    let grid_dims = grid_size.shape();
+    let coords = traj_to_coords(traj,traj_dims);
+    let n_read = data_dims[0];
+    let n_views = data_dims[1];
+    assert_eq!(n_views, coords.len());
+    let mut vol = grid_size.alloc(Complex32::ZERO);
+
+    let mut max_energy = 0.0;
+    let mut max_energy_coords = [0,0,0];
+
+    let mask_dims = ArrayDim::from_shape(&grid_dims[1..]);
+
+    let mut mask = mask_dims.alloc(0f32);
+
+    data.chunks_exact(n_read).enumerate().for_each(|(i,view)| {
+        let [y,z] = coords[i];
+        for x in 0..grid_dims[0] {
+
+            let mask_addr = mask_dims.calc_addr_signed(&[y,z]);
+            mask[mask_addr] = 1.;
+
+            let addr = grid_size.calc_addr_signed(&[x as isize, y, z]);
+            let s = view.get(x).cloned().unwrap_or(Complex32::ZERO);
+            if phase_correct {
+                let e = s.norm_sqr();
+                if e > max_energy {
+                    max_energy = e;
+                    max_energy_coords = [x as isize,y,z];
+                }
+            }
+            vol[addr] = s;
+        }
+    });
+
+    let (vol,mask) = if phase_correct {
+
+        let phase_addr = grid_size.calc_addr_signed(&max_energy_coords);
+        let phase = vol[phase_addr].to_polar().1;
+        vol.par_iter_mut().for_each(|x| *x = *x * Complex32::from_polar(1.,-phase));
+
+        let mut shifted = grid_size.alloc(Complex32::ZERO);
+        let mut mask_shifted = mask_dims.alloc(0f32);
+        let [dx,dy,dz] = max_energy_coords;
+        let shift = [-dx,-dy,-dz];
+        let mask_shift = [-dy,-dz];
+        grid_size.circshift(&shift,&vol,&mut shifted);
+        mask_dims.circshift(&mask_shift,&mask,&mut mask_shifted);
+        (shifted,mask_shifted)
+    }else {
+        (vol,mask)
+    };
+
+    (vol,mask)
+}
+
+
 /// constructs gridded k-space data from compressed views and a trajector mapping for each readout
 /// if traj has only 1 entry for dim[0], it is assumed to be 2-D. If it has 2, it is assumed to be 3-D
-pub fn grid_cartesian<T:Filter>(data:&[Complex32], data_dims:ArrayDim, traj:&[Complex32], traj_dims:ArrayDim, grid_size:ArrayDim, phase_correct:bool, filter:Option<T> ) -> (Vec<Complex32>,Vec<f32>) {
+pub fn grid_cartesian_f<T:Filter>(data:&[Complex32], data_dims:ArrayDim, traj:&[Complex32], traj_dims:ArrayDim, grid_size:ArrayDim, phase_correct:bool, filter:Option<T> ) -> (Vec<Complex32>, Vec<f32>) {
 
     // if a filter is passed, phase correction is set to true
     let phase_correct = if filter.is_some() {

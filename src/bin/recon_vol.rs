@@ -6,7 +6,7 @@ use dft_lib::common::{FftDirection, NormalizationType};
 use dwt_lib::swt3::SWT3Plan;
 use dwt_lib::wavelet::{Wavelet, WaveletType};
 use recon_lib::filters::Fermi;
-use recon_lib::grid_cartesian;
+use recon_lib::grid_cartesian_f;
 use rayon::prelude::*;
 
 #[cfg(feature = "cuda")]
@@ -23,18 +23,18 @@ fn main() {
     let n_it = 300;
 
     {
-        let (raw,raw_dims) = read_cfl(r"B:\ProjectSpace\wa41\l_plus_s\l_plus_s_data\out-0.cfl");
+        let (raw,raw_dims) = read_cfl(r"/Users/Wyatt/l_plus_s_data/out-0.cfl");
         write_nifti("ref",&raw.iter().map(|x|x.norm()).collect::<Vec<_>>(),raw_dims);
     }
 
-    let (raw,raw_dims) = read_cfl(r"B:\ProjectSpace\wa41\l_plus_s\l_plus_s_data\raw-0.cfl");
-    let (traj,traj_dims) = read_cfl(r"B:\ProjectSpace\wa41\l_plus_s\l_plus_s_data\traj-0.cfl");
+    let (raw,raw_dims) = read_cfl(r"/Users/Wyatt/l_plus_s_data/raw-0.cfl");
+    let (traj,traj_dims) = read_cfl(r"/Users/Wyatt/l_plus_s_data/traj-0.cfl");
 
     let grid_dims = ArrayDim::from_shape(&[512,256,256]);
     let grid_shape = grid_dims.shape_ns();
 
     let (mut g,mask) = {
-        let (mut g,mask) = grid_cartesian::<Fermi>(&raw,raw_dims,&traj,traj_dims,grid_dims, true, None);
+        let (mut g,mask) = grid_cartesian_f::<Fermi>(&raw, raw_dims, &traj, traj_dims, grid_dims, true, None);
         g.iter_mut().for_each(|x| *x = x.scale(1./28.));
         // let mut shifted = grid_dims.alloc(Complex32::ZERO);
         // grid_dims.fftshift(&g,&mut shifted,true);
@@ -56,7 +56,7 @@ fn main() {
         g = permuted;
     }
 
-    let permute_shape = [grid_shape[1],grid_shape[2],512];
+    let permute_shape = [grid_shape[1],grid_shape[2],10];
     let permute_dims = ArrayDim::from_shape(permute_shape.as_slice());
     let mut g = g[0..permute_dims.numel()].to_owned();
 
@@ -220,6 +220,10 @@ fn main() {
         let eps_dual = (x.len() as f32).sqrt() * eps_abs
             + eps_rel * u_img_norm;
 
+        if (s_norm < eps_dual) {
+            break
+        }
+        
         if (r_norm < eps_pri) &&  (s_norm < eps_dual) {
             break
         }
