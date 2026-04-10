@@ -1,5 +1,5 @@
 use std::fs::read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use array_lib::ArrayDim;
 use array_lib::io_cfl::{read_cfl, write_cfl};
 use array_lib::io_nifti::write_nifti;
@@ -12,11 +12,21 @@ use lr_rs::rs_svd::{svd_hard, svd_soft};
 use rayon::prelude::*;
 use recon_lib::{estimate_phase_mask, grid_cartesian, grid_cartesian_f};
 
+use clap::Parser;
+
+
+#[derive(Parser, Debug)]
+struct Args {
+    work_dir:PathBuf,
+}
 
 
 fn main() {
 
-    let raw_dir = "/Users/Wyatt/l_plus_s_data";
+
+    let args = Args::parse();
+
+    let raw_dir = &args.work_dir;
 
     // relative threshold value for SWT. This is proportional to sqrt(total energy)
     let rel_thresh = 1.5e-5;
