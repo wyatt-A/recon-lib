@@ -6,11 +6,116 @@ use array_lib::io_nifti::write_nifti;
 use array_lib::num_complex::Complex32;
 use dft_lib::common::{FftDirection, NormalizationType};
 use dft_lib::fftw_fft::{fftw_fftn, fftw_fftn_batched};
+use dwt_lib::swt3::SWT3Plan;
+use dwt_lib::wavelet::{Wavelet, WaveletType};
 use lr_rs::rs_svd::{svd_hard, svd_soft};
 use rayon::prelude::*;
 use recon_lib::{estimate_phase_mask, grid_cartesian, grid_cartesian_f};
 
+
+
 fn main() {
+
+    let raw_dir = "/Users/Wyatt/l_plus_s_data";
+
+    // relative threshold value for SWT. This is proportional to sqrt(total energy)
+    let rel_thresh = 1.5e-5;
+    let decomp_levels = 4;
+
+    let n = 150;
+
+    for i in 0..n {
+
+        println!("working on vol {} of {}",i+1,n);
+        let (mut x,dims) = read_cfl(Path::new(raw_dir).join(format!("y-{}",i)));
+
+        let vol_shape = dims.shape_squeeze();
+
+        let swt = SWT3Plan::new(&vol_shape,decomp_levels,Wavelet::new(WaveletType::Daubechies2));
+        let mut t = vec![Complex32::ZERO;swt.t_domain_size()];
+
+        // fft first and second dims (y,z) [x was moved to back]
+        fftw_fftn_batched(&mut x,&vol_shape[0..2],vol_shape[2],FftDirection::Inverse,NormalizationType::Unitary);
+
+        // calculate total energy to determine threshold
+        let te:f64 = x.par_iter().map(|x|x.norm_sqr() as f64).sum();
+
+        println!("te: {}",te.sqrt());
+
+        let lambda = te.sqrt() as f32 * rel_thresh;
+
+        println!("decomposing ...");
+        swt.decompose(&x,&mut t);
+        println!("thresholding with lambda = {} ...",lambda);
+        swt.soft_thresh(&mut t, lambda);
+        println!("reconstructing ...");
+        swt.reconstruct(&t, &mut x);
+        write_cfl(Path::new(raw_dir).join(format!("f-{}",i)),&x,dims);
+    }
+
+}
+
+
+
+fn __main() {
+
+    // load each traj and raw, grid, perform SWT to estimate phase
+
+    let raw_dir = "/Users/Wyatt/l_plus_s_data";
+
+    let vol_shape = [512,256,256];
+    let perm_shape = [256,256,512];
+    let mask_shape = &vol_shape[1..];
+
+    let vol_dims = ArrayDim::from_shape(&vol_shape);
+    let perm_dims = ArrayDim::from_shape(&perm_shape);
+    let mask_dims = ArrayDim::from_shape(&mask_shape);
+
+    let n_vols = 150;
+    for i in 0..n_vols {
+
+        println!("working on vol {} of {} ...",i+1, n_vols);
+
+        let raw = Path::new(raw_dir).join(format!("raw-{}",i));
+        let trajf = Path::new(raw_dir).join(format!("traj-{}",i));
+        let (data,dims) = read_cfl(&raw);
+        let (traj,t_dims) = read_cfl(&trajf);
+        let (mut x,mask) = grid_cartesian(&data,dims,&traj,t_dims,vol_dims,true);
+        let m = mask.into_iter().map(|x|Complex32::new(x,0.)).collect::<Vec<_>>();
+
+
+        // fft along x dimension
+        fftw_fftn_batched(&mut x,&vol_shape[0..1],vol_shape[1..].iter().product(),FftDirection::Inverse,NormalizationType::Unitary);
+
+        // fftshift the first dimension
+        x.par_chunks_exact_mut(vol_shape[0]).for_each(|chunk| {
+            let mut tmp = vec![Complex32::ZERO;chunk.len()];
+            let a = ArrayDim::from_shape(&[vol_shape[0]]);
+            a.fftshift(&chunk,&mut tmp,true);
+            chunk.copy_from_slice(&tmp);
+        });
+
+        // permute to move x dim to back
+        let mut tmp = perm_dims.alloc(Complex32::ZERO);
+        tmp.par_iter_mut().enumerate().for_each(|(i,t)| {
+            let [yi,zi,xi,..] = perm_dims.calc_idx(i);
+            let addr = vol_dims.calc_addr(&[xi,yi,zi]);
+            *t = x[addr];
+        });
+
+        // write y
+        write_cfl(Path::new(raw_dir).join(format!("y-{}",i)),&tmp,perm_dims);
+        write_cfl(Path::new(raw_dir).join(format!("m-{}",i)),&m,mask_dims);
+
+
+    }
+
+
+
+}
+
+
+fn _main() {
 
     let base_dir = Path::new("/Users/Wyatt/l_plus_s_data");
     let raw_dims = ArrayDim::from_shape(&[512,256,256]);
@@ -90,13 +195,13 @@ fn main() {
     data.iter_mut().zip(phase.iter()).for_each(|(x,p)|{
         *x *= p.conj();
     });
-    
+
     // do shift
 
     svd_soft(&data,&mut dst,[llr_m,llr_n],2000.);
-    
+
     // undo shift
-    
+
     // undo phase correction
     dst.iter_mut().zip(phase.iter()).for_each(|(x,p)|{
         *x *= p;
