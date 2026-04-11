@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use ants_reg_wrapper::AntsRegistration;
+use array_lib::ArrayDim;
 use array_lib::io_cfl::read_cfl;
 use array_lib::io_nifti::write_nifti;
 use array_lib::num_complex::Complex32;
@@ -26,8 +27,15 @@ fn run_reg(work_dir:impl AsRef<Path>, n:usize) {
     let filtered = work_dir.as_ref().join(format!("f-{}",0));
     let ref_nii = filtered.with_extension("nii");
     let (data,dims) = read_cfl(&filtered);
-    let x:Vec<_> = data.into_iter().map(|x|x.norm()).collect();
-    write_nifti(&ref_nii,&x,dims);
+    let shape = dims.shape_squeeze();
+    let stride = shape[0] * shape[1];
+    let mut shifted = dims.alloc(Complex32::ZERO);
+    shifted.chunks_exact_mut(stride).zip(data.chunks_exact(stride)).for_each(|(x,y)|{
+        let s_dims = ArrayDim::from_shape(&[shape[0],shape[1]]);
+        s_dims.fftshift(y,x,false);
+    });
+    let shifted:Vec<_> = shifted.into_iter().map(|x|x.norm()).collect();
+    write_nifti(&ref_nii,&shifted,dims);
 
     let mut trans_vox = vec![];
     trans_vox.push([0.,0.,0.]);
@@ -37,9 +45,12 @@ fn run_reg(work_dir:impl AsRef<Path>, n:usize) {
         let nii = filtered.with_extension("nii");
         let (data,dims) = read_cfl(&filtered);
         let mut shifted = dims.alloc(Complex32::ZERO);
-        dims.fftshift(&data,&mut shifted,false);
+        shifted.chunks_exact_mut(stride).zip(data.chunks_exact(stride)).for_each(|(x,y)|{
+            let s_dims = ArrayDim::from_shape(&[shape[0],shape[1]]);
+            s_dims.fftshift(y,x,false);
+        });
         let shifted:Vec<_> = shifted.into_iter().map(|x|x.norm()).collect();
-        write_nifti(&nii,&shifted,dims);
+        write_nifti(&ref_nii,&shifted,dims);
         let r = AntsRegistration::translation_only_3d(&ref_nii,&nii,"out_");
         let trans = r.run_translation().unwrap();
         r.cleanup_outputs().unwrap();
