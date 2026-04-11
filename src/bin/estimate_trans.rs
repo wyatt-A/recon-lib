@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use ants_reg_wrapper::AntsRegistration;
 use array_lib::io_cfl::read_cfl;
 use array_lib::io_nifti::write_nifti;
+use array_lib::num_complex::Complex32;
 use clap::Parser;
 
 #[derive(Parser)]
@@ -35,8 +36,10 @@ fn run_reg(work_dir:impl AsRef<Path>, n:usize) {
         let filtered = work_dir.as_ref().join(format!("f-{}",i));
         let nii = filtered.with_extension("nii");
         let (data,dims) = read_cfl(&filtered);
-        let x:Vec<_> = data.into_iter().map(|x|x.norm()).collect();
-        write_nifti(&nii,&x,dims);
+        let mut shifted = dims.alloc(Complex32::ZERO);
+        dims.fftshift(&data,&mut shifted,false);
+        let shifted:Vec<_> = shifted.into_iter().map(|x|x.norm()).collect();
+        write_nifti(&nii,&shifted,dims);
         let r = AntsRegistration::translation_only_3d(&ref_nii,&nii,"out_");
         let trans = r.run_translation().unwrap();
         r.cleanup_outputs().unwrap();
