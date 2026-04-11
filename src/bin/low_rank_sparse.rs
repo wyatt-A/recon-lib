@@ -1,4 +1,8 @@
+use std::fs;
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
+use ants_reg_wrapper::AntsRegistration;
 use array_lib::ArrayDim;
 use array_lib::cfl::num_traits::Zero;
 use array_lib::io_cfl::{read_cfl, read_cfl_slice, write_cfl};
@@ -77,6 +81,38 @@ fn build_sample_mask(work_dir:impl AsRef<Path>, n:usize, mask_dims:&[usize]) -> 
 
 }
 
+/// finds linear translations to register images for low-rank recon
+fn run_reg(work_dir:impl AsRef<Path>, n:usize) {
+
+    let filtered = work_dir.as_ref().join(format!("f-{}",0));
+    let ref_nii = filtered.with_extension("nii");
+    let (data,dims) = read_cfl(&filtered);
+    let x:Vec<_> = data.into_iter().map(|x|x.norm()).collect();
+    write_nifti(&ref_nii,&x,dims);
+
+    let mut trans_vox = vec![];
+    trans_vox.push([0.,0.,0.]);
+
+    for i in 1..n {
+        let filtered = work_dir.as_ref().join(format!("f-{}",i));
+        let nii = filtered.with_extension("nii");
+        let (data,dims) = read_cfl(&filtered);
+        let x:Vec<_> = data.into_iter().map(|x|x.norm()).collect();
+        write_nifti(&nii,&x,dims);
+        let r = AntsRegistration::translation_only_3d(&ref_nii,&nii,"out_");
+        let trans = r.run_translation().unwrap();
+        r.cleanup_outputs().unwrap();
+        trans_vox.push([trans.x,trans.y,trans.z]);
+        fs::remove_file(nii).unwrap();
+    }
+
+    let lines:Vec<_> = trans_vox.iter().map(|t| format!("{} {} {}",t[0],t[1],t[2])).collect();
+    let s = lines.join("\n");
+    let mut f = File::create(work_dir.as_ref().join("trans.txt")).unwrap();
+    f.write_all(s.as_bytes()).unwrap();
+
+}
+
 /// prepares input data for low-rank + sparse batch reconstruction
 /// vol_dims must be the size of y. This is often the permuted volume shape where the fully-sampled
 /// axis has been moved to the back i.e `[512,256,256]` -> `[256,256,512]`
@@ -88,6 +124,8 @@ fn prep_lrs(work_dir:impl AsRef<Path>, n:usize, batch_size:usize, batch_offset:u
     write_cfl(work_dir.as_ref().join("p"),&p,p_dims);
     write_cfl(work_dir.as_ref().join("it_m"),&m,m_dims);
 }
+
+
 
 
 fn main() {
