@@ -41,6 +41,7 @@ fn run_reg(work_dir:impl AsRef<Path>, n:usize) {
     trans_vox.push([0.,0.,0.]);
 
     for i in 1..n {
+        println!("registering {i} of {}",n);
         let filtered = work_dir.as_ref().join(format!("f-{}",i));
         let nii = filtered.with_extension("nii");
         let (data,dims) = read_cfl(&filtered);
@@ -50,7 +51,7 @@ fn run_reg(work_dir:impl AsRef<Path>, n:usize) {
             s_dims.fftshift(y,x,false);
         });
         let shifted:Vec<_> = shifted.into_iter().map(|x|x.norm()).collect();
-        write_nifti(&ref_nii,&shifted,dims);
+        write_nifti(&nii,&shifted,dims);
         let r = AntsRegistration::translation_only_3d(&ref_nii,&nii,"out_");
         let trans = r.run_translation().unwrap();
         r.cleanup_outputs().unwrap();
