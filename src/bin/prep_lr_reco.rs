@@ -163,11 +163,13 @@ pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:
 
         // modify g to include translation
         g.par_iter_mut().enumerate().for_each(|(i,g)| {
+            let mut signed = [0,0,0];
             let [ix,iy,iz,..] = vol_d.calc_idx(i);
+            vol_d.signed_coords(&[ix,iy,iz],&mut signed);
             let angle =
-                2. * PI * ix as f64 * trans.x / vol_dims[0] as f64 +
-                2. * PI * iy as f64* trans.y / vol_dims[1] as f64 +
-                2. * PI * iz as f64* trans.z / vol_dims[2] as f64;
+                2. * PI * signed[0] as f64 * trans.x / vol_dims[0] as f64 +
+                2. * PI * signed[1] as f64* trans.y / vol_dims[1] as f64 +
+                2. * PI * signed[2] as f64* trans.z / vol_dims[2] as f64;
             let c = Complex32::from_polar(1., angle as f32);
             *g = *g * c;
             // *g = *g * c.conj(); not sure the correct sign at this point
