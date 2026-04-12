@@ -64,7 +64,7 @@ fn build_phase_map(work_dir:impl AsRef<Path>, n:usize, batch_size:usize, slice_o
     (phase, phase_dims)
 }
 
-fn apply_translations(work_dir:impl AsRef<Path>, n:usize, batch_size:usize, slice_offset:usize, vol_dims:&[usize]) -> (Vec<Complex32>, ArrayDim) {
+fn apply_translations(work_dir:impl AsRef<Path>, n:usize, vol_dims:&[usize]) -> (Vec<Complex32>, ArrayDim) {
 
     let mut f = File::open(work_dir.as_ref().join("trans.txt")).unwrap();
     let mut s = String::new();
@@ -78,14 +78,13 @@ fn apply_translations(work_dir:impl AsRef<Path>, n:usize, batch_size:usize, slic
     // k-space coord determines the shift
 
     for i in 0..n {
-        let f = work_dir.as_ref().join(format!("y-{}",i));
-        let (data,dims) = read_cfl(&f);
-
+        let (data,dims) = read_cfl(work_dir.as_ref().join(format!("y-{}",i)));
+        // perform fft along dim x
 
 
     }
 
-
+    todo!()
 
 
 }

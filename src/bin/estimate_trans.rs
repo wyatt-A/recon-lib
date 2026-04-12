@@ -60,7 +60,8 @@ fn run_reg(work_dir:impl AsRef<Path>, n:usize) {
     }
 
     let lines:Vec<_> = trans_vox.iter().map(|t| format!("{} {} {}",t[0],t[1],t[2])).collect();
-    let s = lines.join("\n");
+    let mut s = lines.join("\n");
+    s.push_str("\n");
     let mut f = File::create(work_dir.as_ref().join("trans.txt")).unwrap();
     f.write_all(s.as_bytes()).unwrap();
 

@@ -1,5 +1,7 @@
-use std::fs::read;
+use std::f64::consts::PI;
+use std::fs::{create_dir_all, read};
 use std::path::{Path, PathBuf};
+use ants_reg_wrapper::AntsRegistration;
 use array_lib::ArrayDim;
 use array_lib::io_cfl::{read_cfl, write_cfl};
 use array_lib::io_nifti::write_nifti;
@@ -12,73 +14,241 @@ use lr_rs::rs_svd::{svd_hard, svd_soft};
 use rayon::prelude::*;
 use recon_lib::{estimate_phase_mask, grid_cartesian, grid_cartesian_f};
 
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 
-#[derive(Parser, Debug)]
-struct Args {
+#[derive(Parser)]
+struct CliArgs {
+    #[command(subcommand)]
+    sub_cmd: SubCmd,
+}
+
+#[derive(Args, Debug, Clone)]
+struct FilterArgs {
     work_dir:PathBuf,
+    index:usize,
+    x:usize,
+    y:usize,
+    z:usize,
+}
+
+#[derive(Args, Debug, Clone)]
+struct GenYArgs {
+    work_dir:PathBuf,
+    index:usize,
+    ref_index:usize,
+    x:usize,
+    y:usize,
+    z:usize,
+}
+
+#[derive(Args, Debug, Clone)]
+struct PhaseArgs {
+    work_dir:PathBuf,
+    index:usize,
+    x:usize,
+    y:usize,
+    z:usize,
 }
 
 
-
+#[derive(Subcommand, Debug, Clone)]
+pub enum SubCmd {
+    /// Run reconstruction
+    Filter(FilterArgs),
+    GenY(GenYArgs),
+    GenPhase(PhaseArgs),
+}
 
 fn main() {
-
-    // load each traj and raw, grid, perform SWT to estimate phase
-
-    let args = Args::parse();
-    let raw_dir = &args.work_dir;
-
-    let vol_shape = [512,256,256];
-    let perm_shape = [256,256,512];
-    let mask_shape = &vol_shape[1..];
-
-    let vol_dims = ArrayDim::from_shape(&vol_shape);
-    let perm_dims = ArrayDim::from_shape(&perm_shape);
-    let mask_dims = ArrayDim::from_shape(&mask_shape);
-
-    let n_vols = 150;
-    for i in 0..n_vols {
-
-        println!("working on vol {} of {} ...",i+1, n_vols);
-
-        let raw = Path::new(raw_dir).join(format!("raw-{}",i));
-        let trajf = Path::new(raw_dir).join(format!("traj-{}",i));
-        let (data,dims) = read_cfl(&raw);
-        let (traj,t_dims) = read_cfl(&trajf);
-        let (mut x,mask) = grid_cartesian(&data,dims,&traj,t_dims,vol_dims,true);
-        let m = mask.into_iter().map(|x|Complex32::new(x,0.)).collect::<Vec<_>>();
-
-
-        // fft along x dimension
-        fftw_fftn_batched(&mut x,&vol_shape[0..1],vol_shape[1..].iter().product(),FftDirection::Inverse,NormalizationType::Unitary);
-
-        // fftshift the first dimension
-        x.par_chunks_exact_mut(vol_shape[0]).for_each(|chunk| {
-            let mut tmp = vec![Complex32::ZERO;chunk.len()];
-            let a = ArrayDim::from_shape(&[vol_shape[0]]);
-            a.fftshift(&chunk,&mut tmp,true);
-            chunk.copy_from_slice(&tmp);
-        });
-
-        // permute to move x dim to back
-        let mut tmp = perm_dims.alloc(Complex32::ZERO);
-        tmp.par_iter_mut().enumerate().for_each(|(i,t)| {
-            let [yi,zi,xi,..] = perm_dims.calc_idx(i);
-            let addr = vol_dims.calc_addr(&[xi,yi,zi]);
-            *t = x[addr];
-        });
-
-        // write y
-        write_cfl(Path::new(raw_dir).join(format!("y-{}",i)),&tmp,perm_dims);
-        write_cfl(Path::new(raw_dir).join(format!("m-{}",i)),&m,mask_dims);
-
-
+    let args = CliArgs::parse();
+    match args.sub_cmd {
+        SubCmd::Filter(args) => {
+            filter_images(args.work_dir,args.index,&[args.x,args.y,args.z]);
+        }
+        SubCmd::GenY(args) => {
+            generate_y(args.work_dir,args.index,args.ref_index,&[args.x,args.y,args.z])
+        }
+        SubCmd::GenPhase(args) => {
+            generate_phase_maps(args.work_dir,args.index,&[args.x,args.y,args.z])
+        }
     }
+}
 
 
+/// corrects the measurement data by applying a linear phase ramp to k-space for a first-order
+/// eddy current shift correction. We commonly see a large shift along the frequency encoding axis.
+/// This is meant to reduce the rank of the data set over q-space
+///
+///
+/// Generates a set of filtered images by zero-filling and applying WST. This is used for estimating
+/// smooth phase maps and translations for reducing the q-space rank.
+fn filter_images(work_dir:impl AsRef<Path>, i:usize, vol_dims:&[usize]) {
+
+    let wd = work_dir.as_ref();
+
+    let out_dir = wd.join("filtered");
+    create_dir_all(&out_dir).unwrap();
+
+    let cfl_out = out_dir.join(format!("f-{}",i));
+    let raw_file = wd.join(format!("raw-{}",i));
+    let traj_file = wd.join(format!("traj-{}",i));
+
+    let rel_thresh = 1.5e-5;
+    let decomp_levels = 4;
+
+    let swt = SWT3Plan::new(vol_dims,decomp_levels,Wavelet::new(WaveletType::Daubechies2));
+
+    let vol_d = ArrayDim::from_shape(vol_dims);
+
+    let mut tmp_buff = vol_d.alloc(Complex32::ZERO);
+    let mut t_dom = vec![Complex32::ZERO;swt.t_domain_size()];
+
+    let (raw,raw_dims) = read_cfl(&raw_file);
+    let (traj,traj_dims) = read_cfl(&traj_file);
+
+    let (mut g,..) = grid_cartesian(&raw,raw_dims,&traj,traj_dims,vol_d,true);
+
+    // inverse 3-D fft
+    fftw_fftn(&mut g,vol_dims,FftDirection::Inverse,NormalizationType::Unitary);
+    vol_d.fftshift(&g, &mut tmp_buff, true);
+
+    let total_energy:f64 = tmp_buff.par_iter().map(|x|x.norm_sqr() as f64).sum();
+    // calculate wavelet domain threshold based on relative sqrt(total energy)
+    let lambda = total_energy.sqrt() as f32 * rel_thresh;
+
+    // perform wavelet thresholding
+    swt.decompose(&tmp_buff, &mut t_dom);
+    swt.soft_thresh(&mut t_dom,lambda);
+    swt.reconstruct(&t_dom,&mut tmp_buff);
+
+    // write filtered image as cfl
+    write_cfl(cfl_out,&tmp_buff,vol_d);
 
 }
+
+/// generates the data consistency arrays for low-rank reconstruction. Includes a call to ants registration
+/// to correct for eddy-current induced translations
+pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:&[usize]) {
+
+    let wd = work_dir.as_ref();
+
+    let vol_d = ArrayDim::from_shape(&vol_dims);
+
+    let raw_file = wd.join(format!("raw-{}",i));
+    let traj_file = wd.join(format!("traj-{}",i));
+
+    let filtered = wd.join("filtered").join(format!("f-{}",i));
+    let out_cfl = wd.join(format!("y-{}",i));
+    let out_mask = wd.join(format!("m-{}", i));
+
+    let (raw,raw_dims) = read_cfl(&raw_file);
+    let (traj,traj_dims) = read_cfl(&traj_file);
+    let (mut g,mask) = grid_cartesian(&raw,raw_dims,&traj,traj_dims,vol_d,true);
+
+    let mask:Vec<_> = mask.into_iter().map(|x|Complex32::new(x,0.)).collect::<Vec<Complex32>>();
+    let mask_dims = ArrayDim::from_shape(&vol_dims[1..]);
+
+    let (f,f_dims) = read_cfl(&filtered);
+    let f:Vec<_> = f.iter().map(|f|f.norm()).collect::<Vec<_>>();
+    write_nifti(&filtered,&f,f_dims);
+
+    if i != ref_index { // this is the reference volume for registration
+        let fixed = wd.join("filtered").join(format!("f-{}",ref_index));
+        let mov = wd.join("mov").join(format!("f-{}",i));
+        let r = AntsRegistration::translation_only_3d(&fixed,&mov,"_out");
+        let trans = r.run_translation().unwrap();
+        r.cleanup_outputs().unwrap();
+        // modify g to include translation
+        g.par_iter_mut().enumerate().for_each(|(i,g)| {
+            let [ix,iy,iz,..] = vol_d.calc_idx(i);
+            let angle =
+                2. * PI * ix as f64 * trans.x / vol_dims[0] as f64 +
+                2. * PI * iy as f64* trans.y / vol_dims[1] as f64 +
+                2. * PI * iz as f64* trans.z / vol_dims[2] as f64;
+            let c = Complex32::from_polar(1., angle as f32);
+            *g = *g * c;
+            // *g = *g * c.conj(); not sure the correct sign at this point
+        });
+    }
+
+    fftw_fftn_batched(&mut g,&[vol_dims[0]],vol_dims[1]*vol_dims[2],FftDirection::Inverse,NormalizationType::Unitary);
+    g.par_chunks_exact_mut(vol_dims[0]).for_each(|chunk| {
+        let a = ArrayDim::from_shape(&[vol_dims[0]]);
+        let mut buff = a.alloc(Complex32::ZERO);
+        a.fftshift(chunk,&mut buff, true);
+        chunk.copy_from_slice(&buff);
+    });
+
+    let mut dst = vec![Complex32::ZERO; g.len()];
+    let new_dims = permute_left3d(&g, &mut dst, vol_d);
+    write_cfl(out_cfl,&dst,new_dims);
+    write_cfl(out_mask,&mask,mask_dims);
+
+}
+
+/// generates a phase map for corrections
+pub fn generate_phase_maps(work_dir:impl AsRef<Path>, i:usize, vol_dims:&[usize]) {
+
+    let wd = work_dir.as_ref();
+    let vol_d = ArrayDim::from_shape(&vol_dims);
+
+    let filtered = wd.join("filtered").join(format!("f-{}",i));
+    let phase_out = wd.join(format!("p-{}",i));
+
+    // read filtered, extract phase, permute axes, ifftshift y and z
+
+    let (f,f_dims) = read_cfl(&filtered);
+    let phase = f.into_iter().map(|x|{
+        Complex32::new(1.,x.to_polar().1)
+    }).collect::<Vec<_>>();
+
+    let mut dst = f_dims.alloc(Complex32::ZERO);
+
+    let p_dims = permute_left3d(&phase, &mut dst, vol_d);
+
+    dst.par_chunks_exact_mut(vol_dims[1]*vol_dims[2]).for_each(|yz_slice| {
+        let d = ArrayDim::from_shape(&vol_dims[1..]);
+        let mut tmp = d.alloc(Complex32::ZERO);
+        d.fftshift(yz_slice, &mut tmp, false);
+        yz_slice.copy_from_slice(&tmp);
+    });
+
+    write_cfl(phase_out,&dst,p_dims);
+
+}
+
+
+/// permutes the data array by shifting 3 axes to the left by one, moving the x-axis to the third
+/// position, the y-axis to the first, and z to the second
+pub fn permute_left3d(src:&[Complex32], dst:&mut [Complex32], dims:ArrayDim) -> ArrayDim {
+
+    let shape_orig = dims.shape();
+    let x = shape_orig[0];
+    let y = shape_orig[1];
+    let z = shape_orig[2];
+
+    let mut new_shape = dims.shape().to_vec();
+    new_shape[0] = y;
+    new_shape[1] = z;
+    new_shape[2] = x;
+
+    assert_eq!(x*y*z, dims.numel(),"array must be fully described by 3 dimensions");
+
+    let new_dims = ArrayDim::from_shape(&new_shape);
+
+    dst.par_iter_mut().enumerate().for_each(|(i,s)| {
+        let [y,z,x,..] = new_dims.calc_idx(i);
+        let addr = dims.calc_addr(&[x,y,z]);
+        *s = src[addr];
+    });
+
+    new_dims
+
+}
+
+
+
+
 
 
 fn _main() {
