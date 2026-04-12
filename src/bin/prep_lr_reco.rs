@@ -204,7 +204,7 @@ pub fn generate_phase_maps(work_dir:impl AsRef<Path>, i:usize, vol_dims:&[usize]
 
     let (f,f_dims) = read_cfl(&filtered);
     let phase = f.into_iter().map(|x|{
-        Complex32::new(1.,x.to_polar().1)
+        Complex32::from_polar(1.,x.to_polar().1)
     }).collect::<Vec<_>>();
 
     let mut dst = f_dims.alloc(Complex32::ZERO);
