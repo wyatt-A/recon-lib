@@ -154,7 +154,7 @@ pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:
 
     if i != ref_index { // this is the reference volume for registration
         let fixed = wd.join("filtered").join(format!("f-{}",ref_index));
-        let mov = wd.join("mov").join(format!("f-{}",i));
+        let mov = wd.join("filtered").join(format!("f-{}",i));
         let r = AntsRegistration::translation_only_3d(&fixed,&mov,"_out");
         let trans = r.run_translation().unwrap();
         r.cleanup_outputs().unwrap();
