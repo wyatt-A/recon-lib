@@ -1,6 +1,6 @@
 use std::fs;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use ants_reg_wrapper::AntsRegistration;
 use array_lib::ArrayDim;
@@ -62,6 +62,32 @@ fn build_phase_map(work_dir:impl AsRef<Path>, n:usize, batch_size:usize, slice_o
         batch.par_iter_mut().for_each(|x| *x = x.scale(1./x.norm()));
     });
     (phase, phase_dims)
+}
+
+fn apply_translations(work_dir:impl AsRef<Path>, n:usize, batch_size:usize, slice_offset:usize, vol_dims:&[usize]) -> (Vec<Complex32>, ArrayDim) {
+
+    let mut f = File::open(work_dir.as_ref().join("trans.txt")).unwrap();
+    let mut s = String::new();
+    f.read_to_string(&mut s).unwrap();
+    let trans = s.lines().map(|l| {
+        l.split_ascii_whitespace().map(|t| t.parse::<f32>().unwrap()).collect::<Vec<f32>>()
+    }).collect::<Vec<Vec<f32>>>();
+
+    assert_eq!(trans.len(),n);
+
+    // k-space coord determines the shift
+
+    for i in 0..n {
+        let f = work_dir.as_ref().join(format!("y-{}",i));
+        let (data,dims) = read_cfl(&f);
+
+
+
+    }
+
+
+
+
 }
 
 /// builds the sampling mask for iterate
