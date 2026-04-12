@@ -171,8 +171,8 @@ pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:
                 2. * PI * signed[1] as f64* trans.y / vol_dims[1] as f64 +
                 2. * PI * signed[2] as f64* trans.z / vol_dims[2] as f64;
             let c = Complex32::from_polar(1., angle as f32);
-            *g = *g * c;
-            // *g = *g * c.conj(); not sure the correct sign at this point
+            //*g = *g * c;
+            *g = *g * c.conj(); //not sure the correct sign at this point
         });
     }
 
