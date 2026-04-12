@@ -158,6 +158,9 @@ pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:
         let r = AntsRegistration::translation_only_3d(&fixed,&mov,"_out");
         let trans = r.run_translation().unwrap();
         r.cleanup_outputs().unwrap();
+
+        println!("apply translation: x:{}, y:{}, z:{}",trans.x,trans.y,trans.z);
+
         // modify g to include translation
         g.par_iter_mut().enumerate().for_each(|(i,g)| {
             let [ix,iy,iz,..] = vol_d.calc_idx(i);
