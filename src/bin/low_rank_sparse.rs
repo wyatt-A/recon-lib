@@ -215,6 +215,8 @@ fn main() {
         cg.report_residuals();
         cg.solve(&mut x,&b,cg_iter,cg_tol);
 
+        write_nifti(wd.join("x"),&x.iter().map(|x|x.norm()).collect::<Vec<_>>(),y_dims);
+
         println!("calculating split variables");
         w(&x,&mut tmp_wx);
         p(&x,&mut tmp_px);
@@ -228,7 +230,7 @@ fn main() {
         dual_w(&tmp_wx, &zw, &mut uw);
         dual_r(&tmp_px, &zr, &mut ur);
 
-        
+
     }
 
 }
