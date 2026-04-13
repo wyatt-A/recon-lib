@@ -144,11 +144,10 @@ fn main() {
         tmp2.iter_mut().zip(zw).zip(uw).for_each(|((t,z),u)|{
             *t = *z - *u;
         });
-
-        println!("running inverse W");
+        
         // b <- A^H y + rhow W^H (zw - uw)
         wh(&tmp2,b);
-        println!("done");
+
         b.iter_mut().for_each(|b| *b = b.scale(rho_w));
         b.iter_mut().zip(&tmp1).for_each(|(a,b)| *a = *a + *b);
 
