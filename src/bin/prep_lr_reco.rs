@@ -256,7 +256,7 @@ pub fn prep_iterate_y(work_dir:impl AsRef<Path>, center_slice:usize, radius:usiz
     let ci = center_slice as isize;
     let s_start = ci - radius as isize;
     let s_end = ci + radius as isize;
-    let indices = (s_start..s_end).collect::<Vec<isize>>();
+    let indices = (s_start..=s_end).collect::<Vec<isize>>();
 
     y.par_chunks_exact_mut(slab_stride).enumerate().for_each(|(i,y)|{
         y.chunks_exact_mut(slice_stride).enumerate().for_each(|(j,y)|{
