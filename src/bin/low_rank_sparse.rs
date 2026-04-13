@@ -145,6 +145,7 @@ fn main() {
             *t = *z - *u;
         });
 
+        println!("running inverse W");
         // b <- A^H y + rhow W^H (zw - uw)
         wh(&tmp2,b);
         b.iter_mut().for_each(|b| *b = b.scale(rho_w));
