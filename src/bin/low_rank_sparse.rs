@@ -211,14 +211,22 @@ fn main() {
         cg.report_residuals();
         cg.solve(&mut x,&b,cg_iter,cg_tol);
 
+        println!("updated x");
+
         w(&x,&mut tmp_wx);
         p(&x,&mut tmp_px);
+
+        println!("calculated split variables");
 
         prox_w(&tmp_wx, &uw, &mut zw);
         prox_r(&tmp_px, &ur, &mut zr);
 
+        println!("updated primal variables");
+
         dual_w(&tmp_wx, &zw, &mut uw);
         dual_r(&tmp_px, &zr, &mut ur);
+
+        println!("updated dual variables");
 
 
     }
