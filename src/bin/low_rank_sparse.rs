@@ -103,13 +103,13 @@ fn main() {
     };
 
     let w = |x: &[Complex32], y:&mut [Complex32]| {
-        y.chunks_exact_mut(batch_stride).zip(x.chunks_exact(batch_stride)).for_each(|(y,x)|{
+        y.chunks_exact_mut(swt.t_domain_size()).zip(x.chunks_exact(batch_stride)).for_each(|(y,x)|{
             swt.decompose(x,y);
         })
     };
 
     let wh = |x: &[Complex32], y:&mut [Complex32]| {
-        y.chunks_exact_mut(batch_stride).zip(x.chunks_exact(batch_stride)).for_each(|(y,x)|{
+        y.chunks_exact_mut(batch_stride).zip(x.chunks_exact(swt.t_domain_size())).for_each(|(y,x)|{
             swt.reconstruct(x,y);
         })
     };
