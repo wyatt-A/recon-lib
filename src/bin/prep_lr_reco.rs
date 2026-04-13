@@ -289,7 +289,9 @@ pub fn prep_iterate_phase(work_dir:impl AsRef<Path>, center_slice:usize, radius:
     p.chunks_exact_mut(slab_stride).enumerate().for_each(|(i,p)|{
         p.chunks_exact_mut(slice_stride).enumerate().for_each(|(j,p)|{
             let x_addr = xd.calc_addr_signed(&[indices[j]]);
-            read_cfl_slice(wd.join(format!("p-{}",i)),x_addr * slice_stride,p);
+            let f = wd.join(format!("p-{}",i));
+            println!("loading {}",f.display());
+            read_cfl_slice(f,x_addr * slice_stride,p);
         });
     });
 
@@ -302,7 +304,9 @@ pub fn prep_iterate_mask(work_dir:impl AsRef<Path>, n_vols:usize, vol_dims:&[usi
     let m_dims = ArrayDim::from_shape(&[vol_dims[1],vol_dims[2],n_vols]);
     let mut m = m_dims.alloc(Complex32::ZERO);
     m.chunks_exact_mut(slice_stride).enumerate().for_each(|(i,m)|{
-        read_cfl_slice(wd.join(format!("m-{}",i)),0,m);
+        let f = wd.join(format!("m-{}",i));
+        println!("loading {}",f.display());
+        read_cfl_slice(f,0,m);
     });
     (m,m_dims)
 }
