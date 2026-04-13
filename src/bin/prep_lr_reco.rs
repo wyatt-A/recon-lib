@@ -261,7 +261,9 @@ pub fn prep_iterate_y(work_dir:impl AsRef<Path>, center_slice:usize, radius:usiz
     y.par_chunks_exact_mut(slab_stride).enumerate().for_each(|(i,y)|{
         y.chunks_exact_mut(slice_stride).enumerate().for_each(|(j,y)|{
             let x_addr = xd.calc_addr_signed(&[indices[j]]);
-            read_cfl_slice(wd.join(format!("y-{}",i)),x_addr * slice_stride,y);
+            let f = wd.join(format!("y-{}",i));
+            println!("loading {}",f.display());
+            read_cfl_slice(f,x_addr * slice_stride,y);
         });
     });
 
