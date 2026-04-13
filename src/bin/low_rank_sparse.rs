@@ -208,29 +208,27 @@ fn main() {
         println!("it {}",it + 1);
 
         // x-update
+        println!("updating linear system ...");
         rhs(&y,&zw, &zr, &uw, &ur, &mut b);
+        println!("running CG solver ...");
         let mut cg = CGSolver::new(lhs);
         cg.report_residuals();
         cg.solve(&mut x,&b,cg_iter,cg_tol);
 
-        println!("updated x");
-
+        println!("calculating split variables");
         w(&x,&mut tmp_wx);
         p(&x,&mut tmp_px);
 
-        println!("calculated split variables");
-
+        println!("running wavelet proximal update ...");
         prox_w(&tmp_wx, &uw, &mut zw);
+        println!("running low-rank proximal update ...");
         prox_r(&tmp_px, &ur, &mut zr);
 
-        println!("updated primal variables");
-
+        println!("updating dual variables ...");
         dual_w(&tmp_wx, &zw, &mut uw);
         dual_r(&tmp_px, &zr, &mut ur);
 
-        println!("updated dual variables");
-
-
+        
     }
 
 }
