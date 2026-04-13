@@ -3,7 +3,7 @@ use std::fs::{create_dir_all, read};
 use std::path::{Path, PathBuf};
 use ants_reg_wrapper::AntsRegistration;
 use array_lib::ArrayDim;
-use array_lib::io_cfl::{read_cfl, write_cfl};
+use array_lib::io_cfl::{read_cfl, read_cfl_slice, write_cfl};
 use array_lib::io_nifti::write_nifti;
 use array_lib::num_complex::Complex32;
 use dft_lib::common::{FftDirection, NormalizationType};
@@ -12,7 +12,7 @@ use dwt_lib::swt3::SWT3Plan;
 use dwt_lib::wavelet::{Wavelet, WaveletType};
 use lr_rs::rs_svd::{svd_hard, svd_soft};
 use rayon::prelude::*;
-use recon_lib::{estimate_phase_mask, grid_cartesian, grid_cartesian_f};
+use recon_lib::grid_cartesian;
 
 use clap::{Args, Parser, Subcommand};
 
@@ -23,7 +23,7 @@ struct CliArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct FilterArgs {
+pub struct FilterArgs {
     work_dir:PathBuf,
     index:usize,
     x:usize,
@@ -32,7 +32,7 @@ struct FilterArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct GenYArgs {
+pub struct GenYArgs {
     work_dir:PathBuf,
     index:usize,
     ref_index:usize,
@@ -42,7 +42,7 @@ struct GenYArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct PhaseArgs {
+pub struct PhaseArgs {
     work_dir:PathBuf,
     index:usize,
     x:usize,
@@ -50,6 +50,16 @@ struct PhaseArgs {
     z:usize,
 }
 
+#[derive(Args, Debug, Clone)]
+pub struct PrepIterateArgs {
+    work_dir:PathBuf,
+    index:usize,
+    radius:usize,
+    n_vols:usize,
+    x:usize,
+    y:usize,
+    z:usize,
+}
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum SubCmd {
@@ -57,6 +67,7 @@ pub enum SubCmd {
     Filter(FilterArgs),
     GenY(GenYArgs),
     GenPhase(PhaseArgs),
+    PrepIterate(PrepIterateArgs),
 }
 
 fn main() {
@@ -70,6 +81,9 @@ fn main() {
         }
         SubCmd::GenPhase(args) => {
             generate_phase_maps(args.work_dir,args.index,&[args.x,args.y,args.z])
+        }
+        SubCmd::PrepIterate(args) => {
+            generate_iterates(args.work_dir, args.index, args.radius, args.n_vols, &[args.x,args.y,args.z])
         }
     }
 }
@@ -152,30 +166,30 @@ pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:
     let f:Vec<_> = f.iter().map(|f|f.norm()).collect::<Vec<_>>();
     write_nifti(&filtered,&f,f_dims);
 
-    if i != ref_index { // this is the reference volume for registration
+    // don't apply shift to reference volume (usually volume 0)
+    if i != ref_index {
         let fixed = wd.join("filtered").join(format!("f-{}",ref_index)).with_extension("nii");
         let mov = wd.join("filtered").join(format!("f-{}",i)).with_extension("nii");;
         let r = AntsRegistration::translation_only_3d(&fixed,&mov,"_out");
         let trans = r.run_translation().unwrap();
         r.cleanup_outputs().unwrap();
-
-        println!("apply translation: x:{}, y:{}, z:{}",trans.x,trans.y,trans.z);
-
+        println!("applying translation: x:{}, y:{}, z:{}",trans.x,trans.y,trans.z);
         // modify g to include translation
         g.par_iter_mut().enumerate().for_each(|(i,g)| {
             let mut signed = [0,0,0];
             let [ix,iy,iz,..] = vol_d.calc_idx(i);
             vol_d.signed_coords(&[ix,iy,iz],&mut signed);
+            let dx = signed[0] as f64;
+            let dy = signed[1] as f64;
+            let dz = signed[2] as f64;
             let angle =
-                2. * PI * signed[0] as f64 * trans.x / vol_dims[0] as f64 +
-                2. * PI * signed[1] as f64* trans.y / vol_dims[1] as f64 +
-                2. * PI * signed[2] as f64* trans.z / vol_dims[2] as f64;
+                2. * PI * dx * trans.x / vol_dims[0] as f64 +
+                2. * PI * dy * trans.y / vol_dims[1] as f64 +
+                2. * PI * dz * trans.z / vol_dims[2] as f64;
             let c = Complex32::from_polar(1., angle as f32);
-            //*g = *g * c;
-            *g = *g * c.conj(); //not sure the correct sign at this point
+            *g = *g * c.conj();
         });
     }
-
     fftw_fftn_batched(&mut g,&[vol_dims[0]],vol_dims[1]*vol_dims[2],FftDirection::Inverse,NormalizationType::Unitary);
     g.par_chunks_exact_mut(vol_dims[0]).for_each(|chunk| {
         let a = ArrayDim::from_shape(&[vol_dims[0]]);
@@ -183,9 +197,8 @@ pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:
         a.fftshift(chunk,&mut buff, true);
         chunk.copy_from_slice(&buff);
     });
-
     let mut dst = vec![Complex32::ZERO; g.len()];
-    let new_dims = permute_left3d(&g, &mut dst, vol_d);
+    let new_dims = vol_d.permute(&g,&mut dst,&[1,2,0]);
     write_cfl(out_cfl,&dst,new_dims);
     write_cfl(out_mask,&mask,mask_dims);
 
@@ -193,161 +206,102 @@ pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:
 
 /// generates a phase map for corrections
 pub fn generate_phase_maps(work_dir:impl AsRef<Path>, i:usize, vol_dims:&[usize]) {
-
     let wd = work_dir.as_ref();
     let vol_d = ArrayDim::from_shape(&vol_dims);
-
     let filtered = wd.join("filtered").join(format!("f-{}",i));
     let phase_out = wd.join(format!("p-{}",i));
-
-    // read filtered, extract phase, permute axes, ifftshift y and z
-
+    // read filtered, extract phase, permute axes, inverse fft shift y and z
     let (f,f_dims) = read_cfl(&filtered);
     let phase = f.into_iter().map(|x|{
         Complex32::from_polar(1.,x.to_polar().1)
     }).collect::<Vec<_>>();
-
     let mut dst = f_dims.alloc(Complex32::ZERO);
-
-    let p_dims = permute_left3d(&phase, &mut dst, vol_d);
-
+    let p_dims = vol_d.permute(&phase, &mut dst, &[1,2,0]);
     dst.par_chunks_exact_mut(vol_dims[1]*vol_dims[2]).for_each(|yz_slice| {
         let d = ArrayDim::from_shape(&vol_dims[1..]);
         let mut tmp = d.alloc(Complex32::ZERO);
         d.fftshift(yz_slice, &mut tmp, false);
         yz_slice.copy_from_slice(&tmp);
     });
-
     write_cfl(phase_out,&dst,p_dims);
-
 }
 
 
-/// permutes the data array by shifting 3 axes to the left by one, moving the x-axis to the third
-/// position, the y-axis to the first, and z to the second
-pub fn permute_left3d(src:&[Complex32], dst:&mut [Complex32], dims:ArrayDim) -> ArrayDim {
+pub fn generate_iterates(work_dir:impl AsRef<Path>, center_slice:usize, radius:usize, n_vols:usize, vol_dims:&[usize]) {
 
-    let shape_orig = dims.shape();
-    let x = shape_orig[0];
-    let y = shape_orig[1];
-    let z = shape_orig[2];
+    let wd = work_dir.as_ref();
 
-    let mut new_shape = dims.shape().to_vec();
-    new_shape[0] = y;
-    new_shape[1] = z;
-    new_shape[2] = x;
+    let (it_y,it_dims) = prep_iterate_y(&work_dir, center_slice, radius, n_vols, vol_dims);
+    let (it_phase,..) = prep_iterate_phase(&work_dir, center_slice, radius, n_vols, vol_dims);
+    let (it_mask,mask_dims) = prep_iterate_mask(&work_dir, n_vols, vol_dims);
 
-    assert_eq!(x*y*z, dims.numel(),"array must be fully described by 3 dimensions");
-
-    let new_dims = ArrayDim::from_shape(&new_shape);
-
-    dst.par_iter_mut().enumerate().for_each(|(i,s)| {
-        let [y,z,x,..] = new_dims.calc_idx(i);
-        let addr = dims.calc_addr(&[x,y,z]);
-        *s = src[addr];
-    });
-
-    new_dims
-
+    write_cfl(wd.join(format!("it-y-{}",center_slice)),&it_y,it_dims);
+    write_cfl(wd.join(format!("it-p-{}",center_slice)),&it_phase,it_dims);
+    write_cfl(wd.join(format!("it-m-{}",center_slice)),&it_mask,mask_dims);
 }
 
 
 
+pub fn prep_iterate_y(work_dir:impl AsRef<Path>, center_slice:usize, radius:usize, n_vols:usize, vol_dims:&[usize]) -> (Vec<Complex32>, ArrayDim) {
 
+    let wd = work_dir.as_ref();
 
+    let slice_stride = vol_dims[1] * vol_dims[2];
+    let slab_stride = slice_stride * (radius*2 + 1);
 
-fn _main() {
+    let y_dims = ArrayDim::from_shape(&[vol_dims[1], vol_dims[2], radius*2 + 1, n_vols]);
+    let mut y = y_dims.alloc(Complex32::ZERO);
 
-    let base_dir = Path::new("/Users/Wyatt/l_plus_s_data");
-    let raw_dims = ArrayDim::from_shape(&[512,256,256]);
-    let permute_dims = ArrayDim::from_shape(&[256,256,11]);
-    let prep_dims = ArrayDim::from_shape(&[256,256,11,16]);
-    let mut prepped = prep_dims.alloc(Complex32::ZERO);
+    let xd = ArrayDim::from_shape(&vol_dims[0..1]);
+    let ci = center_slice as isize;
+    let s_start = ci - radius as isize;
+    let s_end = ci + radius as isize;
+    let indices = (s_start..s_end).collect::<Vec<isize>>();
 
-    let mask_dims = ArrayDim::from_shape(&[256,256,16]);
-    let mut masks = mask_dims.alloc(0f32);
-    let mut phase = prep_dims.alloc(Complex32::ONE);
-
-    // prepped.chunks_exact_mut(permute_dims.numel())
-    //     .zip(phase.chunks_exact_mut(permute_dims.numel()))
-    //     .zip(masks.chunks_exact_mut(mask_dims.shape_squeeze()[0..2].iter().product()))
-    //     .enumerate().for_each(|(vol_idx,((chunk,phase),mask))|{
-    //
-    //     println!("{}",vol_idx);
-    //     let raw_name = format!("raw-{}",vol_idx + 1);
-    //     let traj_name = format!("traj-{}",vol_idx + 1);
-    //     let (data,dims) =read_cfl(base_dir.join(raw_name));
-    //     let (traj,traj_dims) =read_cfl(base_dir.join(traj_name));
-    //     let (mut g,d) = grid_cartesian(&data,dims,&traj,traj_dims,raw_dims,true);
-    //
-    //     mask.copy_from_slice(&d);
-    //
-    //     fftw_fftn_batched(&mut g,&raw_dims.shape()[0..1],raw_dims.shape()[1..].iter().product(),FftDirection::Inverse,NormalizationType::Unitary);
-    //
-    //     // fft shift the first readout dim
-    //     g.par_chunks_exact_mut(raw_dims.shape()[0]).for_each(|readout|{
-    //         let d = ArrayDim::from_shape(&raw_dims.shape()[0..1]);
-    //         let src = readout.to_vec();
-    //         d.fftshift(&src,readout,true);
-    //     });
-    //
-    //
-    //
-    //     let mut buffer = permute_dims.alloc(Complex32::ZERO);
-    //     // index and permute volume
-    //     buffer.par_iter_mut().enumerate().for_each(|(s_idx,x)|{
-    //         let [i,j,k,..] = permute_dims.calc_idx(s_idx);
-    //         let addr = raw_dims.calc_addr(&[k+251,i,j]);
-    //         *x = g[addr];
-    //     });
-    //     chunk.copy_from_slice(&buffer);
-    //
-    //     println!("estimating phase ...");
-    //     let mut p = permute_dims.alloc(Complex32::ONE);
-    //     fftw_fftn_batched(&mut buffer,&[256,256],11,FftDirection::Inverse,NormalizationType::Unitary);
-    //     estimate_phase_mask(&buffer,&mut p,permute_dims,1.,6);
-    //
-    //     phase.copy_from_slice(&p);
-    //     write_nifti("phase",&phase.iter().map(|x|x.to_polar().1).collect::<Vec<_>>(),permute_dims);
-    //
-    // });
-    //
-    // let masks:Vec<Complex32> = masks.into_iter().map(|x|Complex32::new(x,0.)).collect();
-    //
-    // write_nifti("phase",&phase.iter().map(|x|x.to_polar().1).collect::<Vec<_>>(),prep_dims);
-    // write_cfl("prepped",&prepped,prep_dims);
-    // write_cfl("masks",&masks,mask_dims);
-    // write_cfl("phase",&phase,prep_dims);
-
-
-    let (mut data,dims) = read_cfl("prepped");
-    let (phase,dims) = read_cfl("phase");
-
-    let llr_m = prep_dims.shape_squeeze()[0..3].iter().product();
-    let llr_n = prep_dims.shape_squeeze()[3];
-    let llr_dims = ArrayDim::from_shape(&[llr_m,llr_n]);
-
-    assert_eq!(dims.numel(),llr_dims.numel());
-    let mut dst = llr_dims.alloc(Complex32::ZERO);
-    println!("running fft");
-    fftw_fftn_batched(&mut data,&[256,256],11*16,FftDirection::Inverse,NormalizationType::Unitary);
-
-    // do phase correction
-    data.iter_mut().zip(phase.iter()).for_each(|(x,p)|{
-        *x *= p.conj();
+    y.par_chunks_exact_mut(slab_stride).enumerate().for_each(|(i,y)|{
+        y.chunks_exact_mut(slice_stride).enumerate().for_each(|(j,y)|{
+            let x_addr = xd.calc_addr_signed(&[indices[j]]);
+            read_cfl_slice(wd.join(format!("y-{}",i)),x_addr * slice_stride,y);
+        });
     });
 
-    // do shift
-
-    svd_soft(&data,&mut dst,[llr_m,llr_n],2000.);
-
-    // undo shift
-
-    // undo phase correction
-    dst.iter_mut().zip(phase.iter()).for_each(|(x,p)|{
-        *x *= p;
-    });
-
-    write_nifti("out",&dst.iter().map(|x|x.to_polar().0).collect::<Vec<_>>(),dims);
+    (y,y_dims)
 
 }
+
+pub fn prep_iterate_phase(work_dir:impl AsRef<Path>, center_slice:usize, radius:usize, n_vols:usize, vol_dims:&[usize]) -> (Vec<Complex32>, ArrayDim) {
+    let wd = work_dir.as_ref();
+
+    let slice_stride = vol_dims[1] * vol_dims[2];
+    let slab_stride = slice_stride * (radius*2 + 1);
+
+    let p_dims = ArrayDim::from_shape(&[vol_dims[1], vol_dims[2], radius*2 + 1, n_vols]);
+    let mut p = p_dims.alloc(Complex32::ZERO);
+
+    let xd = ArrayDim::from_shape(&vol_dims[0..1]);
+    let ci = center_slice as isize;
+    let s_start = ci - radius as isize;
+    let s_end = ci + radius as isize;
+    let indices = (s_start..s_end).collect::<Vec<isize>>();
+
+    p.par_chunks_exact_mut(slab_stride).enumerate().for_each(|(i,p)|{
+        p.chunks_exact_mut(slice_stride).enumerate().for_each(|(j,p)|{
+            let x_addr = xd.calc_addr_signed(&[indices[j]]);
+            read_cfl_slice(wd.join(format!("p-{}",i)),x_addr * slice_stride,p);
+        });
+    });
+
+    (p, p_dims)
+}
+
+pub fn prep_iterate_mask(work_dir:impl AsRef<Path>, n_vols:usize, vol_dims:&[usize]) -> (Vec<Complex32>, ArrayDim) {
+    let wd = work_dir.as_ref();
+    let slice_stride = vol_dims[1] * vol_dims[2];
+    let m_dims = ArrayDim::from_shape(&[vol_dims[1],vol_dims[2],n_vols]);
+    let mut m = m_dims.alloc(Complex32::ZERO);
+    m.par_chunks_exact_mut(slice_stride).enumerate().for_each(|(i,m)|{
+        read_cfl_slice(wd.join(format!("m-{}",i)),0,m);
+    });
+    (m,m_dims)
+}
+
