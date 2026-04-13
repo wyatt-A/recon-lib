@@ -8,6 +8,7 @@ use array_lib::cfl::num_traits::Zero;
 use array_lib::io_cfl::{read_cfl, read_cfl_slice, write_cfl};
 use array_lib::io_nifti::write_nifti;
 use array_lib::num_complex::Complex32;
+use conj_grad::CGSolver;
 use dft_lib::common::{FftDirection, NormalizationType};
 use dwt_lib::swt3::SWT3Plan;
 use dwt_lib::wavelet::{Wavelet, WaveletType};
@@ -18,137 +19,49 @@ use dft_lib::cu_fft::{cu_fftn as fftn, cu_fftn_batch as fftn_batched};
 
 #[cfg(not(feature = "cuda"))]
 use dft_lib::fftw_fft::{fftw_fftn as fftn, fftw_fftn_batched as fftn_batched};
-
-
-
-
-/// builds the main iterate for reconstruction (batch slices of each volume)
-fn build_iterate(work_dir:impl AsRef<Path>, n:usize, batch_size:usize, slice_offset:usize, vol_dims:&[usize]) -> (Vec<Complex32>, ArrayDim) {
-
-
-    let slice_stride = vol_dims[0] * vol_dims[1];
-
-    let offset = slice_stride * slice_offset;
-    let size = batch_size * slice_stride;
-
-    let iterate_dims = ArrayDim::from_shape(&[vol_dims[0],vol_dims[1],batch_size,n]);
-    let mut iterate = iterate_dims.alloc(Complex32::ZERO);
-
-    let work_dir = work_dir.as_ref();
-    iterate.par_chunks_exact_mut(size).enumerate().for_each(|(i,batch)|{
-        let f = work_dir.join(format!("y-{}", i));
-        read_cfl_slice(f,offset,batch);
-    });
-
-    (iterate, iterate_dims)
-
-}
-
-/// builds the phase mask for iterate
-fn build_phase_map(work_dir:impl AsRef<Path>, n:usize, batch_size:usize, slice_offset:usize, vol_dims:&[usize]) -> (Vec<Complex32>, ArrayDim) {
-    let slice_stride = vol_dims[0] * vol_dims[1];
-
-    let offset = slice_stride * slice_offset;
-    let size = batch_size * slice_stride;
-
-    let phase_dims = ArrayDim::from_shape(&[vol_dims[0],vol_dims[1],batch_size,n]);
-    let mut phase = phase_dims.alloc(Complex32::ONE);
-
-    let work_dir = work_dir.as_ref();
-    phase.par_chunks_exact_mut(size).enumerate().for_each(|(i,batch)|{
-        let f = work_dir.join(format!("f-{}", i));
-        read_cfl_slice(f,offset,batch);
-        // normalize to unit magnitude
-        batch.par_iter_mut().for_each(|x| *x = x.scale(1./x.norm()));
-    });
-    (phase, phase_dims)
-}
-
-fn apply_translations(work_dir:impl AsRef<Path>, n:usize, vol_dims:&[usize]) -> (Vec<Complex32>, ArrayDim) {
-
-    let mut f = File::open(work_dir.as_ref().join("trans.txt")).unwrap();
-    let mut s = String::new();
-    f.read_to_string(&mut s).unwrap();
-    let trans = s.lines().map(|l| {
-        l.split_ascii_whitespace().map(|t| t.parse::<f32>().unwrap()).collect::<Vec<f32>>()
-    }).collect::<Vec<Vec<f32>>>();
-
-    assert_eq!(trans.len(),n);
-
-    // k-space coord determines the shift
-
-    for i in 0..n {
-        let (data,dims) = read_cfl(work_dir.as_ref().join(format!("y-{}",i)));
-        // perform fft along dim x
-
-
-    }
-
-    todo!()
-
-
-}
-
-/// builds the sampling mask for iterate
-fn build_sample_mask(work_dir:impl AsRef<Path>, n:usize, mask_dims:&[usize]) -> (Vec<Complex32>, ArrayDim) {
-
-    let size = mask_dims[0] * mask_dims[1];
-    let mask_dims = ArrayDim::from_shape(&[mask_dims[0],mask_dims[1],n]);
-    let mut mask = mask_dims.alloc(Complex32::ZERO);
-
-    let work_dir = work_dir.as_ref();
-    mask.par_chunks_exact_mut(size).enumerate().for_each(|(i,mask)|{
-        let f = work_dir.join(format!("m-{}", i));
-        read_cfl_slice(f,0,mask);
-    });
-
-    (mask, mask_dims)
-
-}
-
-
-
-/// prepares input data for low-rank + sparse batch reconstruction
-/// vol_dims must be the size of y. This is often the permuted volume shape where the fully-sampled
-/// axis has been moved to the back i.e `[512,256,256]` -> `[256,256,512]`
-fn prep_lrs(work_dir:impl AsRef<Path>, n:usize, batch_size:usize, batch_offset:usize, vol_dims:&[usize]) {
-    let (it,it_dims) = build_iterate(&work_dir,n,batch_size,batch_offset,vol_dims);
-    let (p,p_dims) = build_phase_map(&work_dir,n,batch_size,batch_offset,vol_dims);
-    let (m,m_dims) = build_sample_mask(&work_dir,n,&vol_dims[0..2]);
-    write_cfl(work_dir.as_ref().join("it"),&it,it_dims);
-    write_cfl(work_dir.as_ref().join("p"),&p,p_dims);
-    write_cfl(work_dir.as_ref().join("it_m"),&m,m_dims);
-}
-
-
-
+use lr_rs::rs_svd::svd_soft;
 
 fn main() {
 
-    let work_dir = "/Users/Wyatt/l_plus_s_data";
+    let wd = Path::new("/privateShares/wa41/26.wang.06/N61620");
+    let idx = 0;
 
-    prep_lrs(work_dir, 150, 11, 256, &[256,256,512]);
+    let rho_w = 0.05;
+    let lambda_w = 0.001;
+    let rho_r = 0.05;
+    let lambda_r = 0.005;
+    let cg_tol = 1e-6;
+    let cg_iter = 200;
+    let admm_iter = 200;
 
-    let (raw,dims) = read_cfl(Path::new(work_dir).join("it"));
-    let (phase,..) = read_cfl(Path::new(work_dir).join("p"));
-    let (masks,..) = read_cfl(Path::new(work_dir).join("it_m"));
+    let (y,y_dims) = read_cfl(wd.join(format!("it-y-{}",idx)));
+    let (phase,p_dims) = read_cfl(wd.join(format!("it-p-{}",idx)));
+    let (m,m_dims) = read_cfl(wd.join(format!("it-m-{}",idx)));
 
-
-    let raw_shape = dims.shape_squeeze();
-    let batch_size = raw_shape[2];
-    let vols = raw_shape[3];
+    let y_shape = y_dims.shape_squeeze();
+    let vols = y_shape[3];
 
     // shape for 3-D wavelet xform
-    let w_shape = &raw_shape[0..3];
+    let w_shape = &y_shape[0..3];
     // 2-D fourier xform shape
-    let f_shape = &raw_shape[0..2];
+    let f_shape = &y_shape[0..2];
     // number of fourier transforms
-    let n_f = raw_shape[2..4].iter().product();
+    let n_f = y_shape[2..4].iter().product();
 
-    let batch_stride:usize = raw_shape[0..3].iter().product();
-    let img_stride:usize = raw_shape[0..2].iter().product();
+    let batch_stride:usize = y_shape[0..3].iter().product();
+    let img_stride:usize = y_shape[0..2].iter().product();
 
     let swt = SWT3Plan::new(w_shape, 5, Wavelet::new(WaveletType::Daubechies2));
+
+    let mut x = vec![Complex32::ZERO;y_dims.numel()];
+    let mut b = x.clone();
+    let mut zw = vec![Complex32::ZERO;swt.t_domain_size()];
+    let mut uw = zw.clone();
+    let mut zr = x.clone();
+    let mut ur = x.clone();
+
+    let mut tmp_wx = zw.clone();
+    let mut tmp_px = x.clone();
 
     // forward model A
     let a = |x: &[Complex32], y: &mut [Complex32] | {
@@ -156,7 +69,7 @@ fn main() {
         // forward 2-D fft
         fftn_batched(y,f_shape,n_f,FftDirection::Forward,NormalizationType::Unitary);
         // apply sample mask
-        y.chunks_exact_mut(batch_stride).zip(masks.chunks_exact(img_stride)).for_each(|(y,m)|{
+        y.chunks_exact_mut(batch_stride).zip(m.chunks_exact(img_stride)).for_each(|(y,m)|{
             y.chunks_exact_mut(img_stride).for_each(|y|{
                 y.iter_mut().zip(m).for_each(|(y,m)|{
                     *y *= m;
@@ -168,14 +81,14 @@ fn main() {
     // // inverse model A^H
     let ah = |x: &[Complex32], y: &mut [Complex32]| {
         y.copy_from_slice(x);
-        y.chunks_exact_mut(batch_stride).zip(masks.chunks_exact(img_stride)).for_each(|(y,m)|{
+        y.chunks_exact_mut(batch_stride).zip(m.chunks_exact(img_stride)).for_each(|(y,m)|{
             y.chunks_exact_mut(img_stride).for_each(|y|{
                 y.iter_mut().zip(m).for_each(|(y,m)|{
                     *y *= m;
                 })
             })
         });
-        fftn_batched(y,f_shape,n_f,FftDirection::Forward,NormalizationType::Unitary);
+        fftn_batched(y,f_shape,n_f,FftDirection::Inverse,NormalizationType::Unitary);
     };
 
     let w = |x: &[Complex32], y:&mut [Complex32]| {
@@ -191,7 +104,7 @@ fn main() {
     };
 
     // low-rank phase correction
-    let l = |x: &[Complex32], y:&mut [Complex32]| {
+    let p = |x: &[Complex32], y:&mut [Complex32]| {
         y.copy_from_slice(x);
         y.iter_mut().zip(phase.iter()).for_each(|(x,p)|{
             *x *= p.conj();
@@ -199,14 +112,102 @@ fn main() {
     };
 
     // inverse low-rank phase correction
-    let lh = |x: &[Complex32], y:&mut [Complex32]| {
+    let ph = |x: &[Complex32], y:&mut [Complex32]| {
         y.copy_from_slice(x);
         y.iter_mut().zip(phase.iter()).for_each(|(x,p)|{
             *x *= p;
         });
     };
 
+    // A^H y + rhow W^H (zw - uw) + rhor P^H (zr - ur)
+    let rhs = |y:&[Complex32], zw:&[Complex32], zr:&[Complex32], uw:&[Complex32], ur:&[Complex32], b:&mut [Complex32]| {
+
+        let mut tmp1 = vec![Complex32::ZERO; y.len()];
+        let mut tmp2 = vec![Complex32::ZERO; zw.len()];
+        let mut tmp3 = vec![Complex32::ZERO; y.len()];
+
+        // tmp1 <- A^H y
+        ah(y,&mut tmp1);
+
+        // tmp2 <- (zw - uw)
+        tmp2.iter_mut().zip(zw).zip(uw).for_each(|((t,z),u)|{
+            *t = *z - *u;
+        });
+
+        // b <- A^H y + rhow W^H (zw - uw)
+        wh(&tmp2,b);
+        b.iter_mut().for_each(|b| *b = b.scale(rho_w));
+        b.iter_mut().zip(&tmp1).for_each(|(a,b)| *a = *a + *b);
+
+        // tmp3 <- (zr - ur)
+        tmp3.iter_mut().zip(zr).zip(ur).for_each(|((t,z),u)|{
+            *t = *z - *u;
+        });
+
+        // tmp1 <- rhor P^H (zr - ur)
+        ph(&tmp3,&mut tmp1);
+        tmp1.iter_mut().for_each(|t| *t = t.scale(rho_r));
+
+        // b <- A^H y + rhow W^H (zw - uw) + rhor P^H (zr - ur)
+        b.iter_mut().zip(&tmp1).for_each(|(a,b)| *a = *a + *b);
+
+    };
+
+    let prox_w = |wx:&[Complex32], uw:&[Complex32], zw:&mut [Complex32]| {
+        zw.iter_mut().zip(uw).zip(wx).for_each(|((z,u),w)| *z = *z + *u + *w);
+        swt.soft_thresh(zw,lambda_w/rho_w);
+    };
+
+    let prox_r = |px:&[Complex32], ur:&[Complex32], zr:&mut [Complex32]| {
+        zr.iter_mut().zip(ur).zip(px).for_each(|((z,u),p)| *z = *z + *u + *p);
+        let src = zr.to_vec();
+        svd_soft(&src,zr,[batch_stride,vols],lambda_r/rho_r);
+    };
+
+    let dual_w = |wx:&[Complex32], zw:&[Complex32], uw:&mut [Complex32]| {
+        uw.iter_mut().zip(wx).zip(zw).for_each(|((u,w),z)|{
+            *u = *u + *w - *z;
+        });
+    };
+
+    let dual_r = |px:&[Complex32], zr:&[Complex32], ur:&mut [Complex32]| {
+        ur.iter_mut().zip(px).zip(zr).for_each(|((u,p),z)|{
+            *u = *u + *p - *z;
+        });
+    };
+
+    let lhs = |x: &[Complex32], y: &mut [Complex32]| {
+        let mut tmp = vec![Complex32::ZERO; y.len()];
+
+        // y = A^H A x
+        a(x, &mut tmp);
+        ah(&tmp, y);
+
+        let rho = rho_w + rho_r;
+        y.iter_mut().zip(x).for_each(|(yi, &xi)| {
+            *yi += xi * rho;
+        });
+    };
 
 
+    for it in 0..admm_iter {
+
+        // x-update
+        rhs(&y,&zw, &zr, &uw, &ur, &mut b);
+        let mut cg = CGSolver::new(lhs);
+        cg.report_residuals();
+        cg.solve(&mut x,&b,cg_iter,cg_tol);
+
+        w(&x,&mut tmp_wx);
+        p(&x,&mut tmp_px);
+
+        prox_w(&tmp_wx, &uw, &mut zw);
+        prox_r(&tmp_px, &ur, &mut zr);
+
+        dual_w(&tmp_wx, &zw, &mut uw);
+        dual_r(&tmp_px, &zr, &mut ur);
+
+
+    }
 
 }
