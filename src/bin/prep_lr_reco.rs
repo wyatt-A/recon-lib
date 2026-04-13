@@ -258,7 +258,7 @@ pub fn prep_iterate_y(work_dir:impl AsRef<Path>, center_slice:usize, radius:usiz
     let s_end = ci + radius as isize;
     let indices = (s_start..=s_end).collect::<Vec<isize>>();
 
-    y.par_chunks_exact_mut(slab_stride).enumerate().for_each(|(i,y)|{
+    y.chunks_exact_mut(slab_stride).enumerate().for_each(|(i,y)|{
         y.chunks_exact_mut(slice_stride).enumerate().for_each(|(j,y)|{
             let x_addr = xd.calc_addr_signed(&[indices[j]]);
             let f = wd.join(format!("y-{}",i));
@@ -286,7 +286,7 @@ pub fn prep_iterate_phase(work_dir:impl AsRef<Path>, center_slice:usize, radius:
     let s_end = ci + radius as isize;
     let indices = (s_start..s_end).collect::<Vec<isize>>();
 
-    p.par_chunks_exact_mut(slab_stride).enumerate().for_each(|(i,p)|{
+    p.chunks_exact_mut(slab_stride).enumerate().for_each(|(i,p)|{
         p.chunks_exact_mut(slice_stride).enumerate().for_each(|(j,p)|{
             let x_addr = xd.calc_addr_signed(&[indices[j]]);
             read_cfl_slice(wd.join(format!("p-{}",i)),x_addr * slice_stride,p);
@@ -301,7 +301,7 @@ pub fn prep_iterate_mask(work_dir:impl AsRef<Path>, n_vols:usize, vol_dims:&[usi
     let slice_stride = vol_dims[1] * vol_dims[2];
     let m_dims = ArrayDim::from_shape(&[vol_dims[1],vol_dims[2],n_vols]);
     let mut m = m_dims.alloc(Complex32::ZERO);
-    m.par_chunks_exact_mut(slice_stride).enumerate().for_each(|(i,m)|{
+    m.chunks_exact_mut(slice_stride).enumerate().for_each(|(i,m)|{
         read_cfl_slice(wd.join(format!("m-{}",i)),0,m);
     });
     (m,m_dims)
