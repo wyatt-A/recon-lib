@@ -170,7 +170,7 @@ pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:
     if i != ref_index {
         let fixed = wd.join("filtered").join(format!("f-{}",ref_index)).with_extension("nii");
         let mov = wd.join("filtered").join(format!("f-{}",i)).with_extension("nii");;
-        let r = AntsRegistration::translation_only_3d(&fixed,&mov,"_out");
+        let r = AntsRegistration::translation_only_3d(&fixed,&mov,format!("_out-{}",i));
         let trans = r.run_translation().unwrap();
         r.cleanup_outputs().unwrap();
         println!("applying translation: x:{}, y:{}, z:{}",trans.x,trans.y,trans.z);
