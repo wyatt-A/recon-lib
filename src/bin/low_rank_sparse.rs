@@ -1,13 +1,14 @@
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use ants_reg_wrapper::AntsRegistration;
 use array_lib::ArrayDim;
 use array_lib::cfl::num_traits::Zero;
 use array_lib::io_cfl::{read_cfl, read_cfl_slice, write_cfl};
 use array_lib::io_nifti::write_nifti;
 use array_lib::num_complex::Complex32;
+use clap::Parser;
 use conj_grad::CGSolver;
 use dft_lib::common::{FftDirection, NormalizationType};
 use dwt_lib::swt3::SWT3Plan;
@@ -21,10 +22,20 @@ use dft_lib::cu_fft::{cu_fftn as fftn, cu_fftn_batch as fftn_batched};
 use dft_lib::fftw_fft::{fftw_fftn as fftn, fftw_fftn_batched as fftn_batched};
 use lr_rs::rs_svd::svd_soft;
 
+
+#[derive(Parser, Debug)]
+struct Args {
+    work_dir: PathBuf,
+    index:usize,
+}
+
+
 fn main() {
 
-    let wd = Path::new("/privateShares/wa41/26.wang.06/N61620");
-    let idx = 0;
+
+    let args = Args::parse();
+    let wd = &args.work_dir;
+    let idx = args.index;
 
     let rho_w = 0.05;
     let lambda_w = 0.001;
@@ -191,6 +202,8 @@ fn main() {
 
 
     for it in 0..admm_iter {
+
+        println!("it {}",it + 1);
 
         // x-update
         rhs(&y,&zw, &zr, &uw, &ur, &mut b);
