@@ -12,7 +12,7 @@ use dwt_lib::swt3::SWT3Plan;
 use dwt_lib::wavelet::{Wavelet, WaveletType};
 use lr_rs::rs_svd::{svd_hard, svd_soft};
 use rayon::prelude::*;
-use recon_lib::grid_cartesian;
+use recon_lib::{grid_cartesian, signal_scale};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -142,7 +142,7 @@ fn filter_images(work_dir:impl AsRef<Path>, i:usize, vol_dims:&[usize]) {
 
 /// generates the data consistency arrays for low-rank reconstruction. Includes a call to ants registration
 /// to correct for eddy-current induced translations
-pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:&[usize]) {
+pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:&[usize], calib_size:&[usize]) {
 
     let wd = work_dir.as_ref();
 
@@ -154,6 +154,7 @@ pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:
     let filtered = wd.join("filtered").join(format!("f-{}",i));
     let out_cfl = wd.join(format!("y-{}",i));
     let out_mask = wd.join(format!("m-{}", i));
+    let out_scale = wd.join(format!("scale-{}", i));
 
     let (raw,raw_dims) = read_cfl(&raw_file);
     let (traj,traj_dims) = read_cfl(&traj_file);
@@ -190,6 +191,9 @@ pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:
             *g = *g * c.conj();
         });
     }
+
+    let scale = signal_scale(&g,vol_d,calib_size,0.01);
+
     fftw_fftn_batched(&mut g,&[vol_dims[0]],vol_dims[1]*vol_dims[2],FftDirection::Inverse,NormalizationType::Unitary);
     g.par_chunks_exact_mut(vol_dims[0]).for_each(|chunk| {
         let a = ArrayDim::from_shape(&[vol_dims[0]]);
@@ -199,9 +203,10 @@ pub fn generate_y(work_dir:impl AsRef<Path>, i:usize, ref_index:usize, vol_dims:
     });
     let mut dst = vec![Complex32::ZERO; g.len()];
     let new_dims = vol_d.permute(&g,&mut dst,&[1,2,0]);
+
     write_cfl(out_cfl,&dst,new_dims);
     write_cfl(out_mask,&mask,mask_dims);
-
+    write_cfl(out_scale,&[Complex32::new(scale,0.)],ArrayDim::from_shape(&[1]));
 }
 
 /// generates a phase map for corrections
@@ -264,6 +269,9 @@ pub fn prep_iterate_y(work_dir:impl AsRef<Path>, center_slice:usize, radius:usiz
             let f = wd.join(format!("y-{}",i));
             println!("loading {}",f.display());
             read_cfl_slice(f,x_addr * slice_stride,y);
+            let scale_file = wd.join(format!("scale-{}",i));
+            let (scale,..) = read_cfl(scale_file);
+            y.iter_mut().for_each(|x| *x = *x / scale[0]);
         });
     });
 

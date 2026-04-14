@@ -8,6 +8,8 @@ use array_lib::ArrayDim;
 use array_lib::cfl::ndarray::parallel::prelude::*;
 use array_lib::io_cfl::{read_cfl, write_cfl};
 use array_lib::num_complex::Complex32;
+use dft_lib::common::{FftDirection, NormalizationType};
+use dft_lib::rs_fft::rs_fftn;
 use dwt_lib::swt3::SWT3Plan;
 use dwt_lib::wavelet::{Wavelet, WaveletType};
 use serde::{Deserialize, Serialize};
@@ -239,4 +241,29 @@ fn traj_to_coords(traj:&[Complex32], traj_dims:ArrayDim) -> Vec<[isize;2]> {
         };
         [y,z]
     }).collect()
+}
+
+/// finds a normalization factor based on the k-space calibration region. Dividing by the returned
+/// scale results in a normalized image. k-space is assumed to be already phase corrected. saturation
+/// fraction should be a small value representing the most intense values
+pub fn signal_scale(ksp:&[Complex32], dims:ArrayDim, calib_size:&[usize], sat_frac:f32) -> f32 {
+    assert!((0.0..1.0).contains(&sat_frac),"saturation fraction must be between 0 and 1");
+    let calib_dims = ArrayDim::from_shape(calib_size);
+    assert!(calib_dims.numel() <= dims.numel(), "calibration size should be less than or equal to ksp");
+    let mut y = calib_dims.alloc(Complex32::ZERO);
+    // copy calibration region from ksp
+    y.iter_mut().enumerate().for_each(|(i,y)| {
+        let [ix,iy,iz,..] = calib_dims.calc_idx(i);
+        let mut signed = [0,0,0];
+        calib_dims.signed_coords(&[ix,iy,iz],&mut signed);
+        let addr = dims.calc_addr_signed(&signed);
+        *y = ksp[addr];
+    });
+    // go to image domain
+    rs_fftn(&mut y,calib_size,FftDirection::Inverse,NormalizationType::Unitary);
+    // reverse sort, largest to smallest by norm
+    y.sort_by(|a,b| b.norm().partial_cmp(&a.norm()).unwrap());
+    // retrieve the first sample below the saturation band. This guards against a few bright samples
+    let idx = ((y.len() as f32 * sat_frac).floor() as usize).clamp(0,y.len()-1);
+    y[idx].norm()
 }

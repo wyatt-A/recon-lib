@@ -21,7 +21,7 @@ use dft_lib::cu_fft::{cu_fftn as fftn, cu_fftn_batch as fftn_batched};
 #[cfg(not(feature = "cuda"))]
 use dft_lib::fftw_fft::{fftw_fftn as fftn, fftw_fftn_batched as fftn_batched};
 use lr_rs::rs_svd::svd_soft;
-
+use recon_lib::signal_scale;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -45,7 +45,9 @@ fn main() {
     let cg_iter = 200;
     let admm_iter = 200;
 
-    let (y,y_dims) = read_cfl(wd.join(format!("it-y-{}",idx)));
+    let calib_size = [30,30,30];
+
+    let (mut y,y_dims) = read_cfl(wd.join(format!("it-y-{}",idx)));
     let (phase,p_dims) = read_cfl(wd.join(format!("it-p-{}",idx)));
     let (m,m_dims) = read_cfl(wd.join(format!("it-m-{}",idx)));
 
@@ -61,7 +63,9 @@ fn main() {
 
     let batch_stride:usize = y_shape[0..3].iter().product();
     let img_stride:usize = y_shape[0..2].iter().product();
+    let vol_dims = ArrayDim::from_shape(&y_shape[0..3]);
 
+    
     let swt = SWT3Plan::new(w_shape, 5, Wavelet::new(WaveletType::Daubechies2));
 
     let mut x = vec![Complex32::ZERO;y_dims.numel()];
