@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use ants_reg_wrapper::AntsRegistration;
-use array_lib::ArrayDim;
+use array_lib::{ArrayDim, NormSqr};
 use array_lib::cfl::num_traits::Zero;
 use array_lib::io_cfl::{read_cfl, read_cfl_slice, write_cfl};
 use array_lib::io_nifti::write_nifti;
@@ -45,8 +45,6 @@ fn main() {
     let cg_iter = 200;
     let admm_iter = 200;
 
-    let calib_size = [30,30,30];
-
     let (mut y,y_dims) = read_cfl(wd.join(format!("it-y-{}",idx)));
     let (phase,p_dims) = read_cfl(wd.join(format!("it-p-{}",idx)));
     let (m,m_dims) = read_cfl(wd.join(format!("it-m-{}",idx)));
@@ -65,14 +63,15 @@ fn main() {
     let img_stride:usize = y_shape[0..2].iter().product();
     let vol_dims = ArrayDim::from_shape(&y_shape[0..3]);
 
-    
     let swt = SWT3Plan::new(w_shape, 5, Wavelet::new(WaveletType::Daubechies2));
 
     let mut x = vec![Complex32::ZERO;y_dims.numel()];
     let mut b = x.clone();
     let mut zw = vec![Complex32::ZERO;swt.t_domain_size()];
+    let mut zw_prev = zw.clone();
     let mut uw = zw.clone();
     let mut zr = x.clone();
+    let mut zr_prev = x.clone();
     let mut ur = x.clone();
 
     let mut tmp_wx = zw.clone();
@@ -205,6 +204,33 @@ fn main() {
         });
     };
 
+    let resid = |x:&[Complex32], y:&[Complex32]| {
+        x.par_iter().zip(y.par_iter()).map(|(x,y)| (*x - *y).norm_sqr() as f64).sum::<f64>().sqrt() as f32
+    };
+
+    // ||W^H(x - y)||_2
+    let dual_resid_w = |x:&[Complex32], y:&mut [Complex32], tmp:&mut [Complex32]| {
+        y.iter_mut().zip(x).for_each(|(yi, xi)| {
+            *yi = *xi - *yi
+        });
+        wh(y,tmp);
+        tmp.par_iter_mut().map(|x|x.norm_sqr() as f64).sum::<f64>().sqrt() as f32
+    };
+
+    // ||P^H(x - y)||_2
+    let dual_resid_r = |x:&[Complex32], y:&mut [Complex32], tmp:&mut [Complex32]| {
+        y.iter_mut().zip(x).for_each(|(yi, xi)| {
+            *yi = *xi - *yi
+        });
+        ph(y,tmp);
+        tmp.par_iter_mut().map(|x|x.norm_sqr() as f64).sum::<f64>().sqrt() as f32
+    };
+
+    // || Ax - y ||_2
+    let iter_resid = |x:&[Complex32],y:&[Complex32],tmp_y:&mut [Complex32]| {
+        a(x, tmp_y);
+        resid(y,tmp_y)
+    };
 
     for it in 0..admm_iter {
 
@@ -218,21 +244,40 @@ fn main() {
         cg.report_residuals();
         cg.solve(&mut x,&b,cg_iter,cg_tol);
 
-        write_nifti(wd.join(format!("x-{it}")),&x.iter().map(|x|x.norm()).collect::<Vec<_>>(),y_dims);
-
         println!("calculating split variables");
         w(&x,&mut tmp_wx);
         p(&x,&mut tmp_px);
 
         println!("running wavelet proximal update ...");
+        zw_prev.copy_from_slice(&zw);
         prox_w(&tmp_wx, &uw, &mut zw);
         println!("running low-rank proximal update ...");
+        zr_prev.copy_from_slice(&zr);
         prox_r(&tmp_px, &ur, &mut zr);
 
         println!("updating dual variables ...");
         dual_w(&tmp_wx, &zw, &mut uw);
         dual_r(&tmp_px, &zr, &mut ur);
 
+        println!("calculating wavelet primal residual ...");
+        let primal_w = resid(&tmp_wx, &zw);
+        println!("r = {}",primal_w);
+
+        println!("calculating low-rank primal residual ...");
+        let primal_r = resid(&tmp_px, &zr);
+        println!("r = {}",primal_r);
+
+        println!("calculating wavelet dual residual ...");
+        let dual_w = dual_resid_w(&zw, &mut zw_prev, &mut tmp_wx);
+        println!("r = {}",dual_w);
+
+        println!("calculating low-rank dual residual ...");
+        let dual_r = dual_resid_r(&zr, &mut zr_prev, &mut tmp_px);
+        println!("r = {}",dual_r);
+
+        println!("calculating data consistency residual ...");
+        let iter_r = iter_resid(&x,&y,&mut b);
+        println!("r = {}",iter_r);
 
     }
 
